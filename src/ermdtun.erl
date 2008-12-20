@@ -14,8 +14,9 @@
 
 -export([print_rttable/1]).
 
--record(dtun_state, {id, table, timed_out, dict_nonce, peers,
-                     contacts}).
+-export([filter_nodes/6, merge_nodes/3]).
+
+-record(dtun_state, {id, table, timed_out, dict_nonce, peers, contacts}).
 
 
 send_msg(Socket, Host, Port, Msg) ->
