@@ -26,7 +26,7 @@
          terminate/2, code_change/3]).
 
 -record(state, {server, socket, id, nat_state = undefined,
-                dict_nonce, dtun_state}).
+                dict_nonce, dtun_state, peers}).
 
 
 %% 1. Socket1 ---------> {Host, Port}: echo, Nonce1
@@ -133,11 +133,15 @@ init([Server, Port | _]) ->
         error ->
             {stop, {error, ?MODULE, ?LINE, Port, "cannot open port"}};
         Socket ->
+            PeersServer = list_to_atom(atom_to_list(Server) ++ ".peers"),
+            ermpeers:start_link(PeersServer),
+
             <<ID:160>> = crypto:rand_bytes(20),
             Dict = ets:new(Server, [public]),
-            DTUNState = ermdtun:init(Server, ID),
+            DTUNState = ermdtun:init(Server, PeersServer, ID),
             State = #state{server = Server, socket = Socket, id = ID,
-                           dict_nonce = Dict, dtun_state = DTUNState},
+                           dict_nonce = Dict, dtun_state = DTUNState,
+                           peers = PeersServer},
             {ok, State}
     end.
 
@@ -306,6 +310,7 @@ handle_call(_Request, _From, State) ->
 %%--------------------------------------------------------------------
 handle_cast(stop, State) ->
     ermdtun:stop(State#state.dtun_state),
+    ermpeers:stop(State#state.peers),
     {stop, normal, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -320,6 +325,9 @@ handle_info({udp, Socket, IP, Port, Bin}, State) ->
     Term = binary_to_term(Bin),
     io:format("recv udp: ID = ~p~n          Term = ~p~n",
               [State#state.id, Term]),
+
+    ermpeers:add_contacted(State#state.peers, IP, Port),
+
     {noreply, dispatcher(State, Socket, IP, Port, Term)};
 handle_info(_Info, State) ->
     {noreply, State}.

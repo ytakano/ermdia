@@ -4,7 +4,7 @@
 -define(MAX_QUERY, 3).
 -define(MAX_REGISTER, 3).
 
--export([init/2, stop/1]).
+-export([init/3, stop/1]).
 -export([dispatcher/6]).
 -export([find_node/6, find_node/7, find_value/6]).
 -export([register_node/3, request/6]).
@@ -14,7 +14,7 @@
 
 -export([print_rttable/1]).
 
--record(dtun_state, {id, table, timed_out, dict_nonce,
+-record(dtun_state, {id, table, timed_out, dict_nonce, peers,
                      contacts}).
 
 
@@ -323,7 +323,7 @@ merge_nodes([], [], _, _, Ret) ->
     lists:reverse(Ret).
 
 
-init(UDPServer, ID) ->
+init(UDPServer, PeersServer, ID) ->
     Table = list_to_atom(atom_to_list(UDPServer) ++ ".dtun"),
     TID1  = list_to_atom(atom_to_list(UDPServer) ++ ".tout"),
     TID2  = list_to_atom(atom_to_list(UDPServer) ++ ".nonce"),
@@ -333,6 +333,7 @@ init(UDPServer, ID) ->
 
     #dtun_state{id         = ID,
                 table      = Table,
+                peers      = PeersServer,
                 timed_out  = ets:new(TID1, [public]),
                 dict_nonce = ets:new(TID2, [public]),
                 contacts   = ets:new(TID3, [public])}.
@@ -405,6 +406,7 @@ dispatcher(UDPServer, State, Socket, IP, Port,
 
     case NAT of
         global ->
+            ermpeers:add_global(State#dtun_state.peers, IP, Port),
             add2rttable(UDPServer, State#dtun_state.table, FromID, IP, Port);
         _ ->
             ok
