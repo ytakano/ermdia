@@ -7,14 +7,14 @@
 -export([init/3, stop/1]).
 -export([dispatcher/6]).
 -export([find_node/6, find_node/7, find_value/6]).
--export([register_node/3, request/6]).
+-export([register_node/5, request/6]).
 -export([ping/6]).
 
 -export([expiration/1]).
 
 -export([print_rttable/1]).
 
--export([filter_nodes/6, merge_nodes/3]).
+-export([filter_nodes/7, merge_nodes/3]).
 
 -record(dtun_state, {id, table, timed_out, dict_nonce, peers, contacts}).
 
@@ -31,28 +31,26 @@ request(UDPServer, Socket, State, ID, PID, Tag) ->
     Nonce = ermlibs:gen_nonce(),
 
     F = fun() ->
-                Tag1 = ermudp:dtun_find_value(UDPServer, ID),
-                receive
-                    {find_value, Tag1, false, false} ->
-                        case ets:lookup(State#dtun_state.dict_nonce,
-                                        {request, Nonce}) of
-                            [{{request, Nonce}, PID, Tag} | _] ->
-                                ets:delete(State#dtun_state.dict_nonce,
-                                           {request, Nonce}),
-                                catch PID ! {request, Tag, false};
-                            _ ->
-                                ok
-                        end;
-                    {find_value, Tag1, {IP, Port, _Sec}, {FromIP, FromPort}} ->
-                        ping(Socket, State, IP, Port, self(), make_ref()),
+                try
+                    Tag1 = ermudp:dtun_find_value(UDPServer, ID),
+                    receive
+                        {find_value, Tag1, false, false} ->
+                            PID ! {request, Tag, false};
+                        {find_value, Tag1, {IP, Port, _Sec},
+                         {FromIP, FromPort}} ->
+                            ping(Socket, State, IP, Port, self(), make_ref()),
 
-                        Msg = {request, State#dtun_state.id,
-                               ID, Nonce},
-                        send_msg(Socket, FromIP, FromPort, Msg)
-                after 30000 ->
-                        ets:delete(State#dtun_state.dict_nonce,
-                                   {request, Nonce}),
-                        catch PID ! {request, Tag, false}
+                            Msg = {request, State#dtun_state.id,
+                                   ID, Nonce},
+                            send_msg(Socket, FromIP, FromPort, Msg)
+                    after 30000 ->
+                            ets:delete(State#dtun_state.dict_nonce,
+                                       {request, Nonce}),
+                            PID ! {request, Tag, false}
+                    end
+                catch
+                    _:_ ->
+                        ok
                 end
         end,
 
@@ -62,15 +60,16 @@ request(UDPServer, Socket, State, ID, PID, Tag) ->
 
 
 %% 1.  p1 -> p2: register, ID(p1)
-register_node(UDPServer, Socket, State) ->
+register_node(UDPServer, Socket, State, PID, Tag) ->
     F = fun() ->
-                Tag = ermudp:dtun_find_node(UDPServer, State#dtun_state.id),
+                Tag1 = ermudp:dtun_find_node(UDPServer, State#dtun_state.id),
                 receive
-                    {find_node, Tag, Nodes} ->
+                    {find_node, Tag1, Nodes} ->
                         register2nodes(Socket, State#dtun_state.id, Nodes,
-                                       ?MAX_REGISTER)
+                                       ?MAX_REGISTER),
+                        catch PID ! {register, Tag, true}
                 after 30000 ->
-                        ok
+                        catch PID ! {register, Tag, false}
                 end
         end,
     spawn_link(F).
@@ -108,7 +107,8 @@ find_node(Socket, State, NAT, Host, Port, PID, Tag) ->
     ID = State#dtun_state.id,
     F = fun() ->
                 put(State#dtun_state.id ,true),
-                find_node(Socket, State, ID, Nonce, [], 0, NAT, false, PID, Tag)
+                catch find_node(Socket, State, ID, Nonce, [], 0, NAT, false,
+                                PID, Tag)
         end,
     PID1 = spawn_link(F),
     
@@ -136,8 +136,8 @@ find_node_value(Socket, State, NAT, ID, PID, Tag, IsValue) ->
 
     F = fun() ->
                 put(State#dtun_state.id ,true),
-                find_node(Socket, State, ID, Nonce, [], 1, NAT, IsValue,
-                          PID, Tag)
+                catch find_node(Socket, State, ID, Nonce, [], 1, NAT, IsValue,
+                                PID, Tag)
         end,
     PID1 = spawn_link(F),
 
@@ -166,7 +166,7 @@ find_node(Socket, State, ID, Nonce, Nodes, N, NAT, IsValue, PID, Tag) ->
             end;
         {find_node, false, Nodes0, FromID, IP, Port} ->
             Nodes2 = try
-                         Nodes1 = filter_nodes(MyID, FromID, IP, Port,
+                         Nodes1 = filter_nodes(MyID, ID, FromID, IP, Port,
                                                TimedOut, Nodes0),
                          lists:sort(Nodes1)
                      catch
@@ -184,7 +184,7 @@ find_node(Socket, State, ID, Nonce, Nodes, N, NAT, IsValue, PID, Tag) ->
             end,
 
             put(FromID, true),
-            %% io:format("send find_node: ~p~n", [Nodes3]),
+            %% io:format("send find_node: ID = ~p~n~p~n", [ID, Nodes3]),
             N0 = send_find_node(Socket, NAT, MyID, ID, Nonce, Nodes3,
                                 IsValue, ?MAX_QUERY, N - 1),
 
@@ -204,6 +204,7 @@ find_node(Socket, State, ID, Nonce, Nodes, N, NAT, IsValue, PID, Tag) ->
                     end
             end;
         {timeout, ToID, _IP, _Port} ->
+            %% io:format("timeout: MyID = ~p, ToID = ~p~n", [MyID, ToID]),
             ets:insert(TimedOut, {ToID, ermlibs:get_sec()}),
             ermrttable:remove(Table, ToID),
 
@@ -222,7 +223,7 @@ find_node(Socket, State, ID, Nonce, Nodes, N, NAT, IsValue, PID, Tag) ->
                         true ->
                             catch PID ! {find_value, Tag, false, false};
                         _ ->
-                            catch PID ! {find_node, Tag, Nodes1}
+                            catch PID ! {find_node, Tag, Nodes}
                     end
             end
     after 10000 ->
@@ -249,7 +250,7 @@ send_find_node(Socket, NAT, MyID, ID, Nonce, [Node | T], IsValue, Max, N) ->
 
     case get(ID0) of
         undefined ->
-            %% io:format("send: ID0 = ~p~n", [ID0]),
+            %% io:format("send: MyID = ~p~n, ID0 = ~p~n", [MyID, ID0]),
 
             Msg = {find_node, IsValue, MyID, NAT, ID, Nonce},
             send_msg(Socket, IP, Port, Msg),
@@ -274,29 +275,29 @@ send_find_node(Socket, NAT, MyID, ID, Nonce, [Node | T], IsValue, Max, N) ->
     end.
 
 
-filter_nodes(MyID, ID, IP, Port, TimedOut, Nodes) ->
-    filter_nodes(MyID, ID, IP, Port, TimedOut, Nodes, []).
-filter_nodes(MyID, ID, IP, Port, TimedOut, [{_, {ID0, _, _}} | T] , Ret)
+filter_nodes(MyID, Dest, ID, IP, Port, TimedOut, Nodes) ->
+    filter_nodes(MyID, Dest, ID, IP, Port, TimedOut, Nodes, []).
+filter_nodes(MyID, Dest, ID, IP, Port, TimedOut, [{_, {ID0, _, _}} | T] , Ret)
   when MyID =:= ID0 ->
-    filter_nodes(MyID, ID, IP, Port, TimedOut, T,
+    filter_nodes(MyID, Dest, ID, IP, Port, TimedOut, T,
                  [{0, {MyID, localhost, 0}} | Ret]);
-filter_nodes(MyID, ID, IP, Port, TimedOut,
+filter_nodes(MyID, Dest, ID, IP, Port, TimedOut,
              [{_, {ID0, localhost, 0}} | T] , Ret)
   when ID =:= ID0 ->
-    filter_nodes(MyID, ID, IP, Port, TimedOut, T,
-                 [{MyID bxor ID0, {ID, IP, Port}} | Ret]);
-filter_nodes(MyID, ID, IP, Port, TimedOut,
+    filter_nodes(MyID, Dest, ID, IP, Port, TimedOut, T,
+                 [{Dest bxor ID0, {ID, IP, Port}} | Ret]);
+filter_nodes(MyID, Dest, ID, IP, Port, TimedOut,
              [{_, {ID0, _, _} = Node} | T], Ret) ->
     case ets:lookup(TimedOut, Node) of
         [] ->
-            filter_nodes(MyID, ID, IP, Port, TimedOut, T,
-                         [{MyID bxor ID0, Node} | Ret]);
+            filter_nodes(MyID, Dest, ID, IP, Port, TimedOut, T,
+                         [{Dest bxor ID0, Node} | Ret]);
         _ ->
-            filter_nodes(MyID, ID, IP, Port, TimedOut, T, Ret)
+            filter_nodes(MyID, Dest, ID, IP, Port, TimedOut, T, Ret)
     end;
-filter_nodes(MyID, ID, IP, Port, TimedOut, [_H | T], Ret) ->
-    filter_nodes(MyID, ID, IP, Port, TimedOut, T, Ret);
-filter_nodes(_, _, _, _, _, [], Ret) ->
+filter_nodes(MyID, Dest, ID, IP, Port, TimedOut, [_H | T], Ret) ->
+    filter_nodes(MyID, Dest, ID, IP, Port, TimedOut, T, Ret);
+filter_nodes(_, _, _, _, _, _, [], Ret) ->
     Ret.
 
 
@@ -326,9 +327,9 @@ merge_nodes([], [], _, _, Ret) ->
 
 init(UDPServer, PeersServer, ID) ->
     Table = list_to_atom(atom_to_list(UDPServer) ++ ".dtun"),
-    TID1  = list_to_atom(atom_to_list(UDPServer) ++ ".tout"),
-    TID2  = list_to_atom(atom_to_list(UDPServer) ++ ".nonce"),
-    TID3  = list_to_atom(atom_to_list(UDPServer) ++ ".contact"),
+    TID1  = list_to_atom(atom_to_list(UDPServer) ++ ".dtun.tout"),
+    TID2  = list_to_atom(atom_to_list(UDPServer) ++ ".dtun.nonce"),
+    TID3  = list_to_atom(atom_to_list(UDPServer) ++ ".dtun.contact"),
 
     ermrttable:start_link(Table, ID),
 
@@ -371,6 +372,7 @@ dispatcher(_UDPServer, State, _Socket, IP, Port,
            {ping_reply, FromID, Nonce}) ->
     case ets:lookup(State#dtun_state.dict_nonce, {ping, Nonce}) of
         [{{ping, Nonce}, PID, Tag} | _] ->
+            ets:delete(State#dtun_state.dict_nonce, {ping, Nonce}),
             catch PID ! {ping_reply, Tag, FromID, IP, Port};
         _ ->
             ok
@@ -389,8 +391,6 @@ dispatcher(UDPServer, State, Socket, IP, Port,
                 send_msg(Socket, IP, Port, Msg)
         end,
     
-
-
     case IsValue of
         true ->
             case ets:lookup(State#dtun_state.contacts, Dest) of

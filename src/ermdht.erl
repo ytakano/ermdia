@@ -1,10 +1,14 @@
 -module(ermdht).
 
+-export([init/3, stop/1]).
+-export([dispatcher/6]).
+-export([ping/8]).
 -export([find_value/6, find_node/6, find_node/7]).
+-export([print_rttable/1]).
 
 -define(MAX_FINDNODE, 6).
 -define(MAX_QUERY, 3).
--define(MAX_REGISTER, 3).
+-define(MAX_STORE, 3).
 
 
 -record(dht_state, {id, table, timed_out, dict_nonce, peers, db}).
@@ -12,6 +16,56 @@
 
 send_msg(Socket, Host, Port, Msg) ->
     gen_udp:send(Socket, Host, Port, term_to_binary({dht, Msg})).
+
+
+init(UDPServer, Peers, ID) ->
+    Table = list_to_atom(atom_to_list(UDPServer) ++ ".dht"),
+    TID1  = list_to_atom(atom_to_list(UDPServer) ++ ".dht.tout"),
+    TID2  = list_to_atom(atom_to_list(UDPServer) ++ ".dht.nonce"),
+    TID3  = list_to_atom(atom_to_list(UDPServer) ++ ".dht.db"),
+
+    ermrttable:start_link(Table, ID),
+
+    #dht_state{id         = ID,
+               table      = Table,
+               peers      = Peers,
+               timed_out  = ets:new(TID1, [public]),
+               dict_nonce = ets:new(TID2, [public]),
+               db         = ets:new(TID3, [public])}.
+
+
+stop(State) ->
+    ermrttable:stop(State#dht_state.table).
+
+
+%% 1. p1 -> p2: ping, ID(p1), Nonce
+%% 2. p1 <- p2: ping_reply, ID(P2), Nonce
+ping(UDPServer, Socket, State, ID, Host, Port, PID, Tag) ->
+    F1 = fun() ->
+                 Nonce = ermlibs:gen_nonce(),
+                 ets:insert(State#dht_state.dict_nonce,
+                            {{ping, Nonce}, PID, Tag}),
+
+                 Msg = {ping, State#dht_state.id, Nonce},
+                 send_msg(Socket, Host, Port, Msg)
+         end,
+
+    F2 = fun() ->
+                 Tag = ermudp:dtun_request(UDPServer, ID),
+                 receive
+                     {request, Tag, true} ->
+                         F1()
+                 after 1000 ->
+                         ok
+                 end
+         end,
+
+    case ermpeers:is_contacted(peers, Host, Port) of
+        true ->
+            F1();
+        _ ->
+            spawn_link(F2)
+    end.
 
 
 find_value(UDPServer, Socket, State, ID, PID, Tag) ->
@@ -87,8 +141,8 @@ find_node(UDPServer, Socket, State, ID, Nonce, Nodes, N, IsValue, PID, Tag) ->
             end;
         {find_node, false, Nodes0, FromID, IP, Port} ->
             Nodes2 = try
-                         Nodes1 = ermdtun:filter_nodes(MyID, FromID, IP, Port,
-                                                       TimedOut, Nodes0),
+                         Nodes1 = ermdtun:filter_nodes(MyID, ID, FromID, IP,
+                                                       Port, TimedOut, Nodes0),
                          lists:sort(Nodes1)
                      catch
                          _:_ ->
@@ -221,3 +275,84 @@ send_find_node(Socket, UDPServer, Peers, MyID, ID, Nonce, [Node | T],
             send_find_node(Socket, UDPServer, Peers, MyID, ID, Nonce, T,
                            IsValue, Max, N)
     end.
+
+
+dispatcher(_UDPServer, State, Socket, IP, Port, {ping, _FromID, Nonce}) ->
+    Msg = {ping_reply, State#dht_state.id, Nonce},
+    send_msg(Socket, IP, Port, Msg),
+    State;
+dispatcher(_UDPServer, State, _Socket, IP, Port,
+           {ping_reply, FromID, Nonce}) ->
+    case ets:lookup(State#dht_state.dict_nonce, {ping, Nonce}) of
+        [{{ping, Nonce}, PID, Tag} | _] ->
+            ets:delete(State#dht_state.dict_nonce, {ping, Nonce}),
+            catch PID ! {ping_reply, Tag, FromID, IP, Port};
+        _ ->
+            ok
+    end,
+    State;
+dispatcher(UDPServer, State, _Socket, IP, Port,
+           {find_node_reply, IsValue, FromID, Dest, Nonce, Value}) ->
+    case ets:lookup(State#dht_state.dict_nonce, {find_node, Nonce, Dest}) of
+        [{{find_node, Nonce, Dest}, PID} | _] ->
+            catch PID ! {find_node, IsValue, Value, FromID, IP, Port};
+        _ ->
+            ok
+    end,
+
+    add2rttable(UDPServer, State#dht_state.table, FromID, IP, Port),
+
+    State;
+dispatcher(_UDPServer, State, Socket, IP, Port,
+           {find_node, IsValue, _FromID, Dest, Nonce}) ->
+    F = fun() ->
+                Nodes = ermrttable:lookup(State#dht_state.table, Dest,
+                                          ?MAX_FINDNODE),
+                Msg = {find_node_reply, false, State#dht_state.id, Dest,
+                       Nonce, Nodes},
+                
+                send_msg(Socket, IP, Port, Msg)
+        end,
+    
+    case IsValue of
+        true ->
+            case ets:lookup(State#dht_state.db, Dest) of
+                [{Dest, IP1, Port1, Sec} | _] ->
+                    Msg = {find_node_reply, true, State#dht_state.id, Dest,
+                           Nonce, {IP1, Port1, Sec}},
+                    send_msg(Socket, IP, Port, Msg);
+                _ ->
+                    F()
+            end;
+        false ->
+            F()
+    end,
+
+    State;
+dispatcher(_UDPServer, State, _Socket, _IP, _Port, _Msg) ->
+    State.
+
+
+add2rttable(UDPServer, Table, ID, IP, Port) ->
+    F1 = fun(PingID) ->
+                 %% send_ping
+                 Tag = ermudp:dht_ping(UDPServer, ID, IP, Port),
+                 receive
+                     {ping_reply, Tag, PingID, FromIP, FromPort} ->
+                         ermrttable:add(Table, UDPServer, PingID,
+                                        FromIP, FromPort)
+                 after 1000 ->
+                         ermrttable:replace(Table, PingID, ID, IP, Port)
+                 end,
+                 
+                 ermrttable:unset_ping(Table, PingID)
+         end,
+
+    F2 = fun() ->
+                 ermrttable:add(Table, ID, IP, Port, F1)
+         end,
+    spawn_link(F2).
+
+
+print_rttable(State) ->
+    ermrttable:print_state(State#dht_state.table).
