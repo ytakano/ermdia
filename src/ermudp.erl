@@ -37,7 +37,7 @@
 
 %% 1. p1(Socket1) -------------> p2: echo, Nonce1
 %% 2. p1(Socket1) <------------- p2: echo_reply,
-%%                                   Host(Socket1), Port(Socket1),Nonce1
+%%                                   Host(Socket1), Port(Socket1), Nonce1
 %% 3. p1(Socket1) -------------> p2: echo_redirect, Port(Socket2), Nonce2
 %% 4.             p1(Socket2) <- p2: echo_redirect_reply,
 %%                                   Host(Socket1), Port(Socket1), Nonce2
@@ -686,13 +686,9 @@ run_test3() ->
     dtun_register(test),
     register_nodes(N1 + N2),
 
-    Tag = dtun_request(test40, get_id(test50)),
-    receive
-        {request, Tag, Ret} ->
-            io:format("request: ~p~n", [Ret])
-    after 1000 ->
-            io:format("request: timed out~n")
-    end.
+    request(N1 + N2),
+    
+    join_dht(N1 + N2).
 
 
 register_nodes(N)
@@ -734,4 +730,39 @@ start_nodes2(Offset, N)
 
     start_nodes2(Offset, N - 1);
 start_nodes2(_, _) ->
+    ok.
+
+
+request(N)
+  when N > 0 ->
+    S0 = "test" ++ integer_to_list(N),
+    S = list_to_atom(S0),
+    Tag = dtun_request(S, get_id(test)),
+    receive
+        {request, Tag, Ret} ->
+            io:format("request: ~p~n", [Ret])
+    after 1000 ->
+            io:format("request: timed out~n")
+    end;
+request(_) ->
+    ok.
+
+
+join_dht(N)
+  when N > 0 ->
+    S0 = "test" ++ integer_to_list(N),
+    S = list_to_atom(S0),
+
+    dht_find_node(S, "localhost", 10000),
+
+    io:format("N = ~p~n", [N]),
+    receive
+        {find_node, _Tag, _Nodes} ->
+            ok
+    after 10000 ->
+            io:format("timeout find_nod~n")
+    end,
+
+    join_dht(N - 1);
+join_dht(_) ->
     ok.

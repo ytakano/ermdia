@@ -60,7 +60,7 @@ ping(UDPServer, Socket, State, ID, Host, Port, PID, Tag) ->
                  end
          end,
 
-    case ermpeers:is_contacted(peers, Host, Port) of
+    case ermpeers:is_contacted(State#dht_state.peers, Host, Port) of
         true ->
             F1();
         _ ->
@@ -169,6 +169,7 @@ find_node(UDPServer, Socket, State, ID, Nonce, Nodes, N, IsValue, PID, Tag) ->
                               IsValue, PID, Tag);
                 true ->
                     ets:delete(DicNonce, {find_node, ID, Nonce}),
+
                     case IsValue of
                         true ->
                             catch PID ! {find_value, Tag, false, false};
@@ -191,7 +192,10 @@ find_node(UDPServer, Socket, State, ID, Nonce, Nodes, N, IsValue, PID, Tag) ->
                 end,
     
             PID1 = spawn_link(F),
-            put(FromID, PID1);
+            put(FromID, PID1),
+
+            find_node(UDPServer, Socket, State, ID, Nonce, Nodes, N,
+                      IsValue, PID, Tag);
         {timeout, ToID, _IP, _Port} ->
             ets:insert(TimedOut, {ToID, ermlibs:get_sec()}),
             ermrttable:remove(Table, ToID),
@@ -303,8 +307,8 @@ dispatcher(UDPServer, State, _Socket, IP, Port,
     add2rttable(UDPServer, State#dht_state.table, FromID, IP, Port),
 
     State;
-dispatcher(_UDPServer, State, Socket, IP, Port,
-           {find_node, IsValue, _FromID, Dest, Nonce}) ->
+dispatcher(UDPServer, State, Socket, IP, Port,
+           {find_node, IsValue, FromID, Dest, Nonce}) ->
     F = fun() ->
                 Nodes = ermrttable:lookup(State#dht_state.table, Dest,
                                           ?MAX_FINDNODE),
@@ -327,6 +331,8 @@ dispatcher(_UDPServer, State, Socket, IP, Port,
         false ->
             F()
     end,
+
+    add2rttable(UDPServer, State#dht_state.table, FromID, IP, Port),
 
     State;
 dispatcher(_UDPServer, State, _Socket, _IP, _Port, _Msg) ->
