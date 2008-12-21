@@ -22,6 +22,8 @@
 -export([dht_put/3]).
 -export([dht_ping/4]).
 
+-export([expire/1]).
+
 -export([get_id/1]).
 -export([print_state/1]).
 -export([run_test1/0,
@@ -135,6 +137,10 @@ dht_ping(Server, ID, Host, Port) ->
 
 dht_put(Server, Key, Value) ->
     gen_server:call(Server, {dht_put, Key, Value}).
+
+
+expire(Server) ->
+    gen_server:cast(Server, expire).
 
 
 %%====================================================================
@@ -365,6 +371,12 @@ handle_call(_Request, _From, State) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling cast messages
 %%--------------------------------------------------------------------
+handle_cast(expire, State) ->
+    ermdtun:expire(State#state.dtun_state),
+    ermdht:expire(State#state.dht_state),
+    ermpeers:expire(State#state.peers),
+
+    {noreply, State};
 handle_cast(stop, State) ->
     ermdtun:stop(State#state.dtun_state),
     ermdht:stop(State#state.dht_state),

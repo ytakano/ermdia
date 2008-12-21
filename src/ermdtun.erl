@@ -4,19 +4,23 @@
 -define(MAX_QUERY, 3).
 -define(MAX_REGISTER, 3).
 
+-define(DB_TIMEDOUT_TTL, 300).
+-define(DB_TTL, 240).
+
+
 -export([init/3, stop/1]).
 -export([dispatcher/6]).
 -export([find_node/6, find_node/7, find_value/6]).
 -export([register_node/5, request/6]).
 -export([ping/6]).
 
--export([expiration/1]).
+-export([expire/1]).
 
 -export([print_rttable/1]).
 
 -export([filter_nodes/7, merge_nodes/3]).
 
--record(dtun_state, {id, table, timed_out, dict_nonce, peers, contacts}).
+-record(dtun_state, {id, table, timed_out, dict_nonce, peers, contacted}).
 
 
 send_msg(Socket, Host, Port, Msg) ->
@@ -123,7 +127,7 @@ find_node(Socket, State, NAT, ID, PID, Tag) ->
 
 
 find_value(Socket, State, NAT, ID, PID, Tag) ->
-    case ets:lookup(State#dtun_state.contacts, ID) of
+    case ets:lookup(State#dtun_state.contacted, ID) of
         [] ->
             find_node_value(Socket, State, NAT, ID, PID, Tag, true);
         [{ID, IP, Port, Sec} | _] ->
@@ -338,7 +342,7 @@ init(UDPServer, PeersServer, ID) ->
                 peers      = PeersServer,
                 timed_out  = ets:new(TID1, [public]),
                 dict_nonce = ets:new(TID2, [public]),
-                contacts   = ets:new(TID3, [public])}.
+                contacted   = ets:new(TID3, [public])}.
 
 
 dispatcher(_UDPServer, State, _Socket, IP, Port, {register, FromID}) ->
@@ -356,7 +360,7 @@ dispatcher(_UDPServer, State, _Socket, IP, Port, {register, FromID}) ->
                                ID =:= State#dtun_state.id],
                     if
                         length(N0) > 0 ->
-                            ets:insert(State#dtun_state.contacts,
+                            ets:insert(State#dtun_state.contacted,
                                        {FromID, IP, Port, ermlibs:get_sec()});
                         true ->
                             ok
@@ -393,7 +397,7 @@ dispatcher(UDPServer, State, Socket, IP, Port,
     
     case IsValue of
         true ->
-            case ets:lookup(State#dtun_state.contacts, Dest) of
+            case ets:lookup(State#dtun_state.contacted, Dest) of
                 [{Dest, IP1, Port1, Sec} | _] ->
                     Msg = {find_node_reply, true, State#dtun_state.id, Dest,
                            Nonce, {IP1, Port1, ermlibs:get_sec() - Sec}},
@@ -433,7 +437,7 @@ dispatcher(_UDPServer, State, Socket, IP, Port, {request, _, Dest, Nonce}) ->
             Msg = {request_reply, State#dtun_state.id, Nonce},
             send_msg(Socket, IP, Port, Msg);
         true ->
-            case ets:lookup(State#dtun_state.contacts, Dest) of
+            case ets:lookup(State#dtun_state.contacted, Dest) of
                 [] ->
                     ok;
                 [{Dest, DestIP, DestPort, _} | _] ->
@@ -490,24 +494,27 @@ stop(State) ->
     ermrttable:stop(State#dtun_state.table).
 
 
-expiration(State) ->
-    expiration_contacts(State),
-    expiration_timed_out(State).
+expire(State) ->
+    F = fun() ->
+                expire_contacted(State),
+                expire_timed_out(State)
+        end,
+    spawn_link(F).
 
 
-expiration_timed_out(State) ->
+expire_timed_out(State) ->
     Dict = State#dtun_state.timed_out,
-    expiration_timed_out(ets:first(Dict), Dict, ermlibs:get_sec()).
-expiration_timed_out(Key, _, _)
+    expire_timed_out(ets:first(Dict), Dict, ermlibs:get_sec()).
+expire_timed_out(Key, _, _)
   when Key =:= '$end_of_table' ->
     ok;
-expiration_timed_out(Key, Dict, Now) ->
+expire_timed_out(Key, Dict, Now) ->
     Next = ets:next(Dict, Key),
     
     case ets:lookup(Dict, Key) of
         [{_, Sec} | _] ->
             if
-                Now - Sec > 180 ->
+                Now - Sec > ?DB_TIMEDOUT_TTL ->
                     ets:delete(Dict, Key);
                 true ->
                     ok
@@ -516,22 +523,22 @@ expiration_timed_out(Key, Dict, Now) ->
             ok
     end,
     
-    expiration_timed_out(Next, Dict, Now).
+    expire_timed_out(Next, Dict, Now).
 
 
-expiration_contacts(State) ->
-    Dict = State#dtun_state.contacts,
-    expiration_contacts(ets:first(Dict), Dict, ermlibs:get_sec()).
-expiration_contacts(Key, _, _)
+expire_contacted(State) ->
+    Dict = State#dtun_state.contacted,
+    expire_contacted(ets:first(Dict), Dict, ermlibs:get_sec()).
+expire_contacted(Key, _, _)
   when Key =:= '$end_of_table' ->
     ok;
-expiration_contacts(Key, Dict, Now) ->
+expire_contacted(Key, Dict, Now) ->
     Next = ets:next(Dict, Key),
 
     case ets:lookup(Dict, Key) of
         [{_, _, _, Sec} | _] ->
             if
-                Now - Sec > 180 ->
+                Now - Sec > ?DB_TTL ->
                     ets:delete(Dict, Key);
                 true ->
                     ok
@@ -540,4 +547,4 @@ expiration_contacts(Key, Dict, Now) ->
             ok
     end,
     
-    expiration_contacts(Next, Dict, Now).
+    expire_contacted(Next, Dict, Now).

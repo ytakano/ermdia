@@ -10,10 +10,12 @@
 -behaviour(gen_server).
 
 -define(MAX_GLOBAL, 100).
+-define(DB_CONTACTED_TTL, 240).
 
 %% API
 -export([start_link/1, stop/1]).
 -export([add_global/3, add_contacted/3, is_contacted/3]).
+-export([expire/1]).
 
 
 %% gen_server callbacks
@@ -40,6 +42,9 @@ add_contacted(Server, IP, Port) ->
 
 is_contacted(Server, IP, Port) ->
     gen_server:call(Server, {is_contacted, IP, Port}).
+
+expire(Server) ->
+    gen_server:call(Server, expire).
 
 stop(Server) ->
     gen_server:cast(Server, stop).
@@ -95,6 +100,10 @@ handle_call({is_contacted, IP, Port}, _From, State) ->
             end,
 
     {reply, Reply, State};
+handle_call(expire, _From, State) ->
+    expire_contacted(State),
+    Reply = ok,
+    {reply, Reply, State};
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
@@ -139,3 +148,30 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
+
+expire_contacted(State) ->
+    Dict = State#state.contacted,
+    F = fun() ->
+                expire_contacted(ets:first(Dict), Dict, ermlibs:get_sec())
+        end,
+    spawn_link(F).
+expire_contacted(Key, _, _)
+  when Key =:= '$end_of_state' ->
+    ok;
+expire_contacted(Key, Dict, Now) ->
+    Next = ets:next(Dict, Key),
+
+    case ets:lookup(Dict, Key) of
+        [{_, Sec}] ->
+            if
+                Now - Sec > ?DB_CONTACTED_TTL ->
+                    ets:delete(Dict, Key);
+                true ->
+                    ok
+            end;
+        _ ->
+            ok
+    end,
+    
+    expire_contacted(Next, Dict, Now).
+    
