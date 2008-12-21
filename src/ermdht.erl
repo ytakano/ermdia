@@ -4,6 +4,7 @@
 -export([dispatcher/6]).
 -export([ping/8]).
 -export([find_value/6, find_node/6, find_node/7]).
+-export([put_data/7]).
 -export([print_rttable/1]).
 
 -define(MAX_FINDNODE, 6).
@@ -11,7 +12,7 @@
 -define(MAX_STORE, 3).
 
 
--record(dht_state, {id, table, timed_out, dict_nonce, peers, db}).
+-record(dht_state, {id, table, timed_out, dict_nonce, peers, db, db_sec}).
 
 
 send_msg(Socket, Host, Port, Msg) ->
@@ -23,6 +24,7 @@ init(UDPServer, Peers, ID) ->
     TID1  = list_to_atom(atom_to_list(UDPServer) ++ ".dht.tout"),
     TID2  = list_to_atom(atom_to_list(UDPServer) ++ ".dht.nonce"),
     TID3  = list_to_atom(atom_to_list(UDPServer) ++ ".dht.db"),
+    TID4  = list_to_atom(atom_to_list(UDPServer) ++ ".dht.db_sec"),
 
     ermrttable:start_link(Table, ID),
 
@@ -31,7 +33,8 @@ init(UDPServer, Peers, ID) ->
                peers      = Peers,
                timed_out  = ets:new(TID1, [public]),
                dict_nonce = ets:new(TID2, [public]),
-               db         = ets:new(TID3, [public])}.
+               db         = ets:new(TID3, [public, bag]),
+               db_sec     = ets:new(TID4, [public])}.
 
 
 stop(State) ->
@@ -68,12 +71,16 @@ ping(UDPServer, Socket, State, ID, Host, Port, PID, Tag) ->
     end.
 
 
-find_value(UDPServer, Socket, State, ID, PID, Tag) ->
-    case ets:lookup(State#dht_state.db, ID) of
+find_value(UDPServer, Socket, State, Key, PID, Tag) ->
+    <<ID:160>> = crypto:sha(term_to_binary(Key)),
+    case ets:lookup(State#dht_state.db, {ID, Key}) of
         [] ->
-            find_node_value(UDPServer, Socket, State, ID, PID, Tag, true);
-        [{ID, IP, Port, Sec} | _] ->
-            catch PID ! {find_value, Tag, {IP, Port, Sec}}
+            find_node_value(UDPServer, Socket, State, ID, PID, Tag,
+                            {true, Key});
+        Values ->
+            [Value | _] = Values,
+            Num = length(Values),
+            catch PID ! {find_value, Tag, {0, Num, Value}, {localhost, 0}}
     end.
 
 
@@ -98,9 +105,9 @@ find_node(UDPServer, Socket, State, ID, PID, Tag) ->
     find_node_value(UDPServer, Socket, State, ID, PID, Tag, false).
 
 
-%% 1. p1 -> p2: find_node, true | false, ID(p1), DestID, Nonce
+%% 1. p1 -> p2: find_node, {true, Key} | false, ID(p1), DestID, Nonce
 %% 2. p1 <- p2: find_node_reply, true | false, ID(p2), DestID,
-%%              Nonce, Nodes | Value
+%%              Nonce, Nodes | {Index, #Total, Value, Elapsed_Time}
 %%
 %% 2-1. p1 -------> p3: request (ermdtun)
 %% 2-1.       p2 <- p3: request_by (ermdtun)
@@ -319,22 +326,53 @@ dispatcher(UDPServer, State, Socket, IP, Port,
         end,
     
     case IsValue of
-        true ->
-            case ets:lookup(State#dht_state.db, Dest) of
-                [{Dest, IP1, Port1, Sec} | _] ->
-                    Msg = {find_node_reply, true, State#dht_state.id, Dest,
-                           Nonce, {IP1, Port1, Sec}},
-                    send_msg(Socket, IP, Port, Msg);
-                _ ->
-                    F()
-            end;
         false ->
-            F()
+            F();
+        {true, Key} ->
+            case ets:lookup(State#dht_state.db, {Dest, Key}) of
+                [] ->
+                    F();
+                Values ->
+                    Sec = case ets:lookup(State#dht_state.db_sec,
+                                          {Dest, Key}) of
+                              [{_, S} | _] ->
+                                  S;
+                              _ ->
+                                  ermlibs:get_sec()
+                          end,
+
+                    [{{Dest, Key}, Value} | _] = Values,
+                    Num = length(Values),
+                    Msg = {find_node_reply, true, State#dht_state.id, Dest,
+                           Nonce, {0, Num, Value, ermlibs:get_sec() - Sec}},
+                    send_msg(Socket, IP, Port, Msg)
+            end;
+        _ ->
+            ok
     end,
 
     add2rttable(UDPServer, State#dht_state.table, FromID, IP, Port),
 
     State;
+dispatcher(_UDPServer, State, _Socket, _IP, _Port,
+           {put, _FromID, ID, Key, Value}) ->
+    case ermrttable:lookup(State#dht_state.table, ID, ?MAX_STORE * 2) of
+        error ->
+            State;
+        Nodes ->
+            N0 = [X || {_, {ID0, _, _}} = X <- Nodes,
+                       ID0 =:= State#dht_state.id],
+            if
+                length(N0) > 0 ->
+                    %% io:format("insert data: Key = ~p, Value = ~p~n",
+                    %%           [Key, Value]),
+                    ets:insert(State#dht_state.db,
+                               {{ID, Key}, Value});
+                true ->
+                    ok
+            end,
+            State
+    end;
 dispatcher(_UDPServer, State, _Socket, _IP, _Port, _Msg) ->
     State.
 
@@ -362,3 +400,41 @@ add2rttable(UDPServer, Table, ID, IP, Port) ->
 
 print_rttable(State) ->
     ermrttable:print_state(State#dht_state.table).
+
+
+%% 1. p1 -> p2: put, ID, Key, Value
+put_data(UDPServer, Socket, State, Key, Value, PID, Tag) ->
+    <<ID:160>> = crypto:sha(term_to_binary(Key)),
+    F = fun() ->
+                Tag1 = ermudp:dht_find_node(UDPServer, ID),
+                receive
+                    {find_node, Tag1, Nodes} ->
+                        send_put(Socket,
+                                 State#dht_state.db,
+                                 State#dht_state.db_sec,
+                                 State#dht_state.id,
+                                 ID, Key, Value,
+                                 Nodes, ?MAX_STORE, 0),
+                        catch PID ! {put_data, Tag, true}
+                after 30000 ->
+                        catch PID ! {put_data, Tag, false}
+                end
+        end,
+    
+    spawn_link(F).
+    
+
+send_put(Socket, DB, DBSec, MyID, ID, Key, Value,
+         [{_, {_, IP, Port}} | T], Max, N)
+  when N < Max ->
+    Msg = {put, MyID, ID, Key, Value},
+    send_msg(Socket, IP, Port, Msg),
+    send_put(Socket, MyID, DB, DBSec, ID, Key, Value, T, Max, N + 1);
+send_put(Socket, MyID, DB, DBSec, ID, Key, Value,
+         [{_, {_, localhost, 0}} | T], Max, N)
+  when N < Max ->
+    ets:insert(DB, {{ID, Key}, Value}),
+    send_put(Socket, MyID, DB, DBSec, ID, Key, Value, T, Max, N + 1);
+send_put(_, _, _, _, _, _, _, _, _, _) ->
+    ok.
+    

@@ -127,7 +127,7 @@ find_value(Socket, State, NAT, ID, PID, Tag) ->
         [] ->
             find_node_value(Socket, State, NAT, ID, PID, Tag, true);
         [{ID, IP, Port, Sec} | _] ->
-            catch PID ! {find_value, Tag, {IP, Port, Sec}}
+            catch PID ! {find_value, Tag, {IP, Port, ermlibs:get_sec() - Sec}}
     end.
 
 
@@ -348,7 +348,7 @@ dispatcher(_UDPServer, State, _Socket, IP, Port, {register, FromID}) ->
             State;
         _ ->
             case ermrttable:lookup(State#dtun_state.table,
-                                   FromID, ?MAX_REGISTER) of
+                                   FromID, ?MAX_REGISTER * 2) of
                 error ->
                     State;
                 Nodes ->
@@ -396,7 +396,7 @@ dispatcher(UDPServer, State, Socket, IP, Port,
             case ets:lookup(State#dtun_state.contacts, Dest) of
                 [{Dest, IP1, Port1, Sec} | _] ->
                     Msg = {find_node_reply, true, State#dtun_state.id, Dest,
-                           Nonce, {IP1, Port1, Sec}},
+                           Nonce, {IP1, Port1, ermlibs:get_sec() - Sec}},
                     send_msg(Socket, IP, Port, Msg);
                 _ ->
                     F()

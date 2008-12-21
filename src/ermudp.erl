@@ -19,6 +19,7 @@
 
 
 -export([dht_find_node/3, dht_find_node/2, dht_find_value/2]).
+-export([dht_put/3]).
 -export([dht_ping/4]).
 
 -export([get_id/1]).
@@ -126,11 +127,14 @@ dht_find_node(Server, Host, Port) ->
 dht_find_node(Server, ID) ->
     gen_server:call(Server, {dht_find_node, ID}).
 
-dht_find_value(Server, ID) ->
-    gen_server:call(Server, {dht_find_value, ID}).
+dht_find_value(Server, Key) ->
+    gen_server:call(Server, {dht_find_value, Key}).
 
 dht_ping(Server, ID, Host, Port) ->
     gen_server:call(Server, {dht_ping, ID, Host, Port}).
+
+dht_put(Server, Key, Value) ->
+    gen_server:call(Server, {dht_put, Key, Value}).
 
 
 %%====================================================================
@@ -178,6 +182,11 @@ init([Server, Port | _]) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
+handle_call({dht_put, Key, Value}, {PID, Tag}, State) ->
+    ermdht:put_data(State#state.server, State#state.socket,
+                    State#state.dht_state, Key, Value, PID, Tag),
+    Reply = Tag,
+    {reply, Reply, State};
 handle_call({dht_find_node, Host, Port}, {PID, Tag}, State) ->
     ermdht:find_node(State#state.server, State#state.socket,
                      State#state.dht_state, Host, Port, PID, Tag),
@@ -188,9 +197,9 @@ handle_call({dht_find_node, ID}, {PID, Tag}, State) ->
                      State#state.dht_state, ID, PID, Tag),
     Reply = Tag,
     {reply, Reply, State};
-handle_call({dht_find_value, ID}, {PID, Tag}, State) ->
+handle_call({dht_find_value, Key}, {PID, Tag}, State) ->
     ermdht:find_value(State#state.server, State#state.socket,
-                      State#state.dht_state, ID, PID, Tag),
+                      State#state.dht_state, Key, PID, Tag),
     Reply = Tag,
     {reply, Reply, State};
 handle_call({dht_ping, ID, Host, Port}, {PID, Tag}, State) ->
