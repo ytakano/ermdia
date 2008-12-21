@@ -83,9 +83,15 @@ find_value(UDPServer, Socket, State, Key, PID, Tag) ->
             find_node_value(UDPServer, Socket, State, ID, PID, Tag,
                             {true, Key});
         Values ->
-            [Value | _] = Values,
+            [{{ID, Key}, Value} | _] = Values,
+            Sec = case ets:lookup(State#dht_state.db_sec, {ID, Key, Value}) of
+                      [{_, S} | _] ->
+                          ermlibs:get_sec() - S;
+                      _ ->
+                          0
+                  end,
             Num = length(Values),
-            catch PID ! {find_value, Tag, {0, Num, Value}, {localhost, 0}}
+            catch PID ! {find_value, Tag, {0, Num, Value, Sec}, {localhost, 0}}
     end.
 
 
@@ -140,12 +146,26 @@ find_node(UDPServer, Socket, State, ID, Nonce, Nodes, N, IsValue, PID, Tag) ->
     Table    = State#dht_state.table,
     DicNonce = State#dht_state.dict_nonce,
     Peers    = State#dht_state.peers,
+    DB       = State#dht_state.db,
+    DBSec    = State#dht_state.db_sec,
 
     receive
         {find_node, true, Value, _FromID, IP, Port} ->
-            case IsValue of
-                true ->
+            case {IsValue, Value} of
+                {{true, Key}, {_, _, Val, ETime}} ->
+                    if
+                        ETime > ?DB_TTL ->
+                            ok;
+                        ETime < 0 ->
+                            ok;
+                        true ->
+                            Sec = ermlibs:get_sec() - ETime,
+                            ets:insert(DB, {{ID, Key}, Val}),
+                            ets:insert(DBSec, {{ID, Key, Val}, Sec})
+                    end,
+
                     ets:delete(DicNonce, {find_node, ID, Nonce}),
+
                     catch PID ! {find_value, Tag, Value, {IP, Port}};
                 _ ->
                     find_node(UDPServer, Socket, State, ID, Nonce, Nodes, N - 1,
@@ -338,15 +358,16 @@ dispatcher(UDPServer, State, Socket, IP, Port,
                 [] ->
                     F();
                 Values ->
+                    [{{Dest, Key}, Value} | _] = Values,
+
                     Sec = case ets:lookup(State#dht_state.db_sec,
-                                          {Dest, Key}) of
+                                          {Dest, Key, Value}) of
                               [{_, S} | _] ->
                                   ermlibs:get_sec() - S;
                               _ ->
                                   0
                           end,
 
-                    [{{Dest, Key}, Value} | _] = Values,
                     Num = length(Values),
                     Msg = {find_node_reply, true, State#dht_state.id, Dest,
                            Nonce, {0, Num, Value, Sec}},
@@ -421,9 +442,9 @@ put_data(UDPServer, Socket, State, Key, Value, PID, Tag) ->
                                  State#dht_state.id,
                                  ID, Key, Value,
                                  Nodes, ?MAX_STORE, 0),
-                        catch PID ! {put_data, Tag, true}
+                        catch PID ! {put, Tag, true}
                 after 30000 ->
-                        catch PID ! {put_data, Tag, false}
+                        catch PID ! {put, Tag, false}
                 end
         end,
     

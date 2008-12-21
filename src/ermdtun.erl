@@ -153,16 +153,28 @@ find_node_value(Socket, State, NAT, ID, PID, Tag, IsValue) ->
 
 
 find_node(Socket, State, ID, Nonce, Nodes, N, NAT, IsValue, PID, Tag) ->
-    MyID     = State#dtun_state.id,
-    TimedOut = State#dtun_state.timed_out,
-    Table    = State#dtun_state.table,
-    DicNonce = State#dtun_state.dict_nonce,
+    MyID      = State#dtun_state.id,
+    TimedOut  = State#dtun_state.timed_out,
+    Table     = State#dtun_state.table,
+    DicNonce  = State#dtun_state.dict_nonce,
+    Contacted = State#dtun_state.contacted,
 
     receive
         {find_node, true, Value, _FromID, IP, Port} ->
-            case IsValue of
-                true ->
+            case {IsValue, Value} of
+                {true, {IP0, Port0, ETime}} ->
+                    if
+                        ETime > ?DB_TTL ->
+                            ok;
+                        ETime < 0 ->
+                            ok;
+                        true ->
+                            Sec = ermlibs:get_sec() - ETime,
+                            ets:insert(Contacted, {ID, IP0, Port0, Sec})
+                    end,
+
                     ets:delete(DicNonce, {find_node, ID, Nonce}),
+
                     catch PID ! {find_value, Tag, Value, {IP, Port}};
                 _ ->
                     find_node(Socket, State, ID, Nonce, Nodes, N - 1,

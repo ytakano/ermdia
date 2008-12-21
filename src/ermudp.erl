@@ -393,8 +393,8 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 handle_info({udp, Socket, IP, Port, Bin}, State) ->
     Term = binary_to_term(Bin),
-    io:format("recv udp: ID = ~p~n          Term = ~p~n",
-              [State#state.id, Term]),
+%%    io:format("recv udp: ID = ~p~n          Term = ~p~n",
+%%              [State#state.id, Term]),
 
     ermpeers:add_contacted(State#state.peers, IP, Port),
 
@@ -672,12 +672,13 @@ start_nodes(N)
     start_link(S, 10000 + N),
     set_nat_state(S, ?STATE_GLOBAL),
 
-    dtun_find_node(S, "localhost", 10000),
+    Tag = dtun_find_node(S, "localhost", 10000),
 
-    io:format("N = ~p~n", [N]),
     receive
-        {find_node, _Tag, _Nodes} ->
-            ok
+        {find_node, Tag, _Nodes} ->
+            io:format("start_nodes: N = ~p~n", [N])
+    after 10000 ->
+            io:format("start_nodes: timed out, N = ~p~n", [N])
     end,
 
     start_nodes(N - 1);
@@ -698,6 +699,7 @@ run_test3() ->
     N1 = 20,
     N2 = 80,
 
+    io:format("start: test~n"),
     start_link(test, 10000),
     set_nat_state(test, ?STATE_GLOBAL),
     
@@ -709,7 +711,10 @@ run_test3() ->
 
     request(N1 + N2),
     
-    join_dht(N1 + N2).
+    join_dht(N1 + N2),
+
+    put_dht(N1 + N2),
+    find_value_dht(N1 + N2).
 
 
 register_nodes(N)
@@ -719,8 +724,10 @@ register_nodes(N)
 
     Tag = dtun_register(S),
     receive
-        {register, Tag, _} ->
-            ok
+        {register, Tag, Ret} ->
+            io:format("regsiter_nodes: N = ~p, Ret = ~p~n", [N, Ret])
+    after 10000 ->
+            io:format("regsiter_nodes: timed out, N = ~p~n", [N])
     end,
 
     register_nodes(N - 1);
@@ -741,12 +748,13 @@ start_nodes2(Offset, N)
     start_link(S, 10000 + N + Offset),
     set_nat_state(S, ?STATE_CONE),
 
-    dtun_find_node(S, "localhost", 10000),
+    Tag = dtun_find_node(S, "localhost", 10000),
 
-    io:format("N = ~p~n", [N + Offset]),
     receive
-        {find_node, _Tag, _Nodes} ->
-            ok
+        {find_node, Tag, _Nodes} ->
+            io:format("start_nodes2: N = ~p~n", [N + Offset])
+    after 10000 ->
+            io:format("start_nodes2: timed out, N = ~p~n", [N + Offset])
     end,
 
     start_nodes2(Offset, N - 1);
@@ -761,9 +769,9 @@ request(N)
     Tag = dtun_request(S, get_id(test)),
     receive
         {request, Tag, Ret} ->
-            io:format("request: ~p~n", [Ret])
+            io:format("request: N = ~p, Ret = ~p~n", [N, Ret])
     after 1000 ->
-            io:format("request: timed out~n")
+            io:format("request: timed out, N = ~p~n", [N])
     end;
 request(_) ->
     ok.
@@ -774,16 +782,54 @@ join_dht(N)
     S0 = "test" ++ integer_to_list(N),
     S = list_to_atom(S0),
 
-    dht_find_node(S, "localhost", 10000),
+    Tag = dht_find_node(S, "localhost", 10000),
 
-    io:format("N = ~p~n", [N]),
     receive
-        {find_node, _Tag, _Nodes} ->
+        {find_node, Tag, _Nodes} ->
+            io:format("join_dht: N = ~p~n", [N]),
             ok
     after 10000 ->
-            io:format("timeout find_nod~n")
+            io:format("join_dht: timed out, N = ~p~n", [N])
     end,
 
     join_dht(N - 1);
 join_dht(_) ->
     ok.
+
+
+put_dht(N)
+  when N > 0 ->
+    S0 = "test" ++ integer_to_list(N),
+    S = list_to_atom(S0),
+
+    Tag = dht_put(S, N, N),
+    receive
+        {put, Tag, Ret} ->
+            io:format("dht_put: N = ~p, Ret = ~p~n", [N, Ret])
+    after 10000 ->
+            io:format("dht_put: timed out, N = ~p~n", [N])
+    end,
+    
+    put_dht(N - 1);
+put_dht(_) ->
+    ok.
+
+
+find_value_dht(N)
+  when N > 1 ->
+    S0 = "test" ++ integer_to_list(N),
+    S = list_to_atom(S0),
+
+    Tag = dht_find_value(S, N - 1),
+    receive
+        {find_value, Tag, Value, From} ->
+            io:format("find_value_dht: N = ~p, Value = ~p, From = ~p~n",
+                      [N, Value, From])
+    after 10000 ->
+            io:format("find_value_dht: timed out, N = ~p~n", [N])
+    end,
+
+    find_value_dht(N - 1);
+find_value_dht(_) ->
+    ok.
+
