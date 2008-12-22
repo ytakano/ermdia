@@ -13,6 +13,8 @@
 -export([start/2, start/3, start_link/2, start_link/3, stop/1]).
 -export([join/3]).
 
+-export([put_data/3, get_data/2, index_get/4]).
+
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -40,8 +42,25 @@ start(Server, Port, IsGlobal) ->
 stop(Server) ->
     gen_server:cast(Server, stop).
 
+%% self() ! {join, false | true}
 join(Server, Host, Port) ->
     gen_server:call(Server, {join, Host, Port}).
+
+%% self() ! {put, Tag, true | false}
+put_data(Server, Key, Value) ->
+    ok.
+
+%% self() ! {find_value, Tag,
+%%           false | {Index, #Total, Value, Elapsed_Time},
+%%           false | {IP, Port}}
+get_data(Server, Key) ->
+    ok.
+
+%% self() ! {index_get, Tag,
+%%           false | {Index, #Total, Value, Elapsed_Time},
+%%           {IP, Port}}
+index_get(Server, Key, Index, From) ->
+    ok.
 
 %%====================================================================
 %% gen_server callbacks
