@@ -5,6 +5,7 @@
 -export([ping/8]).
 -export([find_value/6, find_node/6, find_node/7]).
 -export([put_data/7]).
+-export([index_get/8]).
 -export([print_rttable/1]).
 
 -export([expire/1]).
@@ -44,6 +45,43 @@ init(UDPServer, Peers, ID) ->
 
 stop(State) ->
     ermrttable:stop(State#dht_state.table).
+
+
+%% 1. p1 -> p2: index_get, ID(p1), Dest, Key, Index, Nonce
+%% 2. p1 <- p2: index_get_reply, ID(p2), Dest,
+%%              false | {Index, #Total, Value, Elapsed_Time}, Nonce
+index_get(_, State, Key, Index, localhost, 0, PID, Tag) ->
+    Data = case ets:lookup(State#dht_state.db) of
+               [] ->
+                   false;
+               Values ->
+                   Len = length(Values),
+                   I = if
+                           Index > Len ->
+                               Len;
+                           true ->
+                               Index
+                       end,
+                   {{ID, Key}, Value} = lists:nth(I),
+                   Sec = case ets:lookup(State#dht_state.db_sec,
+                                         {ID, Key, Value}) of
+                             [{_, S} | _] ->
+                                 ermlibs:get_sec() - S;
+                             _ ->
+                                 0
+                         end,
+                   {Index, Len, Value, Sec}
+           end,
+    catch PID ! {index_get, Tag, Data, {localhost, 0}};
+index_get(Socket, State, Key, Index, IP, Port, PID, Tag) ->
+    <<ID:160>> = crypto:sha(term_to_binary(Key)),
+    Nonce = ermlibs:gen_nonce(),
+
+    ets:insert(State#dht_state.dict_nonce,
+               {{index_get, ID, Key, Nonce}, PID, Tag}),
+
+    Msg = {index_get, State#dht_state.id, ID, Key, Index, Nonce},
+    send_msg(Socket, IP, Port, Msg).
 
 
 %% 1. p1 -> p2: ping, ID(p1), Nonce
@@ -91,7 +129,7 @@ find_value(UDPServer, Socket, State, Key, PID, Tag) ->
                           0
                   end,
             Num = length(Values),
-            catch PID ! {find_value, Tag, {0, Num, Value, Sec}, {localhost, 0}}
+            catch PID ! {find_value, Tag, {1, Num, Value, Sec}, {localhost, 0}}
     end.
 
 
@@ -313,6 +351,43 @@ send_find_node(Socket, UDPServer, Peers, MyID, ID, Nonce, [Node | T],
     end.
 
 
+dispatcher(_UDPServer, State, Socket, IP, Port,
+           {index_get, _FromID, ID, Key, Index, Nonce}) ->
+    Data = case ets:lookup(State#dht_state.db) of
+               [] ->
+                   false;
+               Values ->
+                   Len = length(Values),
+                   I = if
+                           Index > Len ->
+                               Len;
+                           true ->
+                               Index
+                       end,
+                   {{ID, Key}, Value} = lists:nth(I),
+                   Sec = case ets:lookup(State#dht_state.db_sec,
+                                         {ID, Key, Value}) of
+                             [{_, S} | _] ->
+                                 ermlibs:get_sec() - S;
+                             _ ->
+                                 0
+                         end,
+                   {Index, Len, Value, Sec}
+           end,
+
+    Msg = {index_get_reply, State#dht_state.id, ID, Key, Data, Nonce},
+    send_msg(Socket, IP, Port, Msg),
+    State;
+dispatcher(_UDPServer, State, _Socket, IP, Port,
+           {index_get_reply, _FromID, ID, Key, Data, Nonce}) ->
+    case ets:lookup(State#dht_state.dict_nonce, {index_get, ID, Key, Nonce}) of
+        [{{ID, Key, Nonce}, PID, Tag} | _] ->
+            ets:delete(State#dht_state.dict_nonce, {index_get, ID, Key, Nonce}),
+            catch PID ! {index_get, Tag, Data, {IP, Port}};
+        _ ->
+            ok
+    end,
+    State;
 dispatcher(_UDPServer, State, Socket, IP, Port, {ping, _FromID, Nonce}) ->
     Msg = {ping_reply, State#dht_state.id, Nonce},
     send_msg(Socket, IP, Port, Msg),
@@ -370,7 +445,7 @@ dispatcher(UDPServer, State, Socket, IP, Port,
 
                     Num = length(Values),
                     Msg = {find_node_reply, true, State#dht_state.id, Dest,
-                           Nonce, {0, Num, Value, Sec}},
+                           Nonce, {1, Num, Value, Sec}},
                     send_msg(Socket, IP, Port, Msg)
             end;
         _ ->
@@ -523,5 +598,5 @@ expire_db(Key, DB, DBSec, Now) ->
     end,
     
     expire_db(Next, DB, DBSec, Now).
-            
+
                 

@@ -12,6 +12,7 @@
 %% API
 -export([start_link/2, stop/1]).
 -export([detect_nat/3, detect_nat_type/5]).
+-export([set_nat_state/2, get_nat_state/1]).
 
 -export([dtun_find_node/3, dtun_find_node/2, dtun_find_value/2]).
 -export([dtun_ping/3]).
@@ -19,7 +20,7 @@
 
 
 -export([dht_find_node/3, dht_find_node/2, dht_find_value/2]).
--export([dht_put/3]).
+-export([dht_put/3, dht_index_get/5]).
 -export([dht_ping/4]).
 
 -export([expire/1]).
@@ -94,6 +95,9 @@ detect_nat_type(Server, Host1, Port1, Host2, Port2) ->
 set_nat_state(Server, NATState) ->
     gen_server:call(Server, {set_nat_state, NATState}).
 
+get_nat_state(Server) ->
+    gen_server:call(Server, get_nat_state).
+
 get_id(Server) ->
     gen_server:call(Server, get_id).
 
@@ -137,6 +141,9 @@ dht_ping(Server, ID, Host, Port) ->
 
 dht_put(Server, Key, Value) ->
     gen_server:call(Server, {dht_put, Key, Value}).
+
+dht_index_get(Server, Key, Index, IP, Port) ->
+    gen_server:call(Server, {dht_index_get, Key, Index, IP, Port}).
 
 
 expire(Server) ->
@@ -188,6 +195,11 @@ init([Server, Port | _]) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
+handle_call({index_get, Key, Index, IP, Port}, {PID, Tag}, State) ->
+    ermdht:index_get(State#state.socket, State#state.dht_state,
+                     Key, Index, IP, Port, PID, Tag),
+    Reply = Tag,
+    {reply, Reply, State};
 handle_call({dht_put, Key, Value}, {PID, Tag}, State) ->
     ermdht:put_data(State#state.server, State#state.socket,
                     State#state.dht_state, Key, Value, PID, Tag),
@@ -340,6 +352,9 @@ handle_call({detect_nat, Host, Port}, {PID, Tag}, State) ->
 handle_call({set_nat_state, NATState}, _From, State) ->
     Reply = ok,
     {reply, Reply, State#state{nat_state = NATState}};
+handle_call(get_nat_state, _From, State) ->
+    Reply = State#state.nat_state,
+    {reply, Reply, State};
 handle_call(get_id, _From, State) ->
     Reply = State#state.id,
     {reply, Reply, State};
@@ -356,7 +371,7 @@ handle_call(print_state, _From, State) ->
     io:format("DTUN:~n"),
     ermdtun:print_rttable(State#state.dtun_state),
 
-    io:format("~nDHT:~n"),
+    io:format("~n~nDHT:~n"),
     ermdht:print_rttable(State#state.dht_state),
 
     Reply = ok,

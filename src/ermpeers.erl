@@ -14,7 +14,7 @@
 
 %% API
 -export([start_link/1, stop/1]).
--export([add_global/3, add_contacted/3, is_contacted/3]).
+-export([add_global/3, get_global/1, add_contacted/3, is_contacted/3]).
 -export([expire/1]).
 
 
@@ -36,6 +36,9 @@ start_link(Server) ->
 
 add_global(Server, IP, Port) ->
     gen_server:call(Server, {add_global, IP, Port}).
+
+get_global(Server) ->
+    gen_server:call(Server, get_global).
 
 add_contacted(Server, IP, Port) ->
     gen_server:call(Server, {add_contacted, IP, Port}).
@@ -86,6 +89,9 @@ handle_call({add_global, IP, Port}, _From, State) ->
     
     Reply = ok,
     {reply, Reply, State#state{global = G2}};
+handle_call(get_global, _From, State) ->
+    Reply = State#state.global,
+    {reply, Reply, State};
 handle_call({add_contacted, IP, Port}, _From, State) ->
     ets:insert(State#state.contacted, {{IP, Port}, ermlibs:get_sec()}),
 
@@ -156,7 +162,7 @@ expire_contacted(State) ->
         end,
     spawn_link(F).
 expire_contacted(Key, _, _)
-  when Key =:= '$end_of_state' ->
+  when Key =:= '$end_of_table' ->
     ok;
 expire_contacted(Key, Dict, Now) ->
     Next = ets:next(Dict, Key),
