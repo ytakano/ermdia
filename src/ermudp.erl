@@ -23,7 +23,7 @@
 -export([dht_put/3, dht_index_get/5]).
 -export([dht_ping/4]).
 
--export([send_dgram/3]).
+-export([dgram_send/3, dgram_set_callback/2]).
 
 -export([expire/1]).
 
@@ -152,8 +152,11 @@ dht_index_get(Server, Key, Index, IP, Port) ->
     gen_server:call(Server, {dht_index_get, Key, Index, IP, Port}).
 
 
-send_dgram(Server, ID, Data) ->
-    gen_server:call(Server, {send_dgram, ID, Data}).
+dgram_send(Server, ID, Data) ->
+    gen_server:call(Server, {dgram_send, ID, Data}).
+
+dgram_set_callback(Server, Func) ->
+    gen_server:call(Server, {dgram_set_callback, Func}).
 
 
 expire(Server) ->
@@ -207,8 +210,13 @@ init([Server, Port | _]) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
-handle_call({send_dgram, ID, Data}, _From, State) ->
-    ermdgram:send_dgram(State#state.socket, State#state.dgram_state, ID, Data),
+handle_call({dgram_set_callback, Func}, _From, State) ->
+    DgramState = ermdgram:set_recv_func(State#state.dgram_state, Func),
+    Reply = ok,
+    {reply, Reply, State#state{dgram_state = DgramState}};
+handle_call({dgram_send, ID, Data}, _From, State) ->
+    ermdgram:send_dgram(State#state.server, State#state.socket,
+                        State#state.dgram_state, ID, Data),
     Reply = ok,
     {reply, Reply, State};
 handle_call({index_get, Key, Index, IP, Port}, {PID, Tag}, State) ->
@@ -508,7 +516,7 @@ dispatcher(State, Socket, IP, Port, {dht, Msg}) ->
                                  Socket, IP, Port, Msg),
     State#state{dht_state = DHTState};
 dispatcher(State, Socket, IP, Port, {dgram, Msg}) ->
-    DgramState = ermdgram:dispatcher(State#state.dht_state,
+    DgramState = ermdgram:dispatcher(State#state.dgram_state,
                                      Socket, IP, Port, Msg),
     State#state{dgram_state = DgramState};
 dispatcher(State, _, _IP, _Port, _Data) ->
@@ -758,7 +766,14 @@ run_test3() ->
     join_dht(N1 + N2),
 
     put_dht(N1 + N2),
-    find_value_dht(N1 + N2).
+    find_value_dht(N1 + N2),
+
+    F = fun(_Socket, _IP, _Port, _ID, Data) ->
+                io:format("recv dgram: Data = ~p~n", [Data])
+        end,
+    
+    dgram_set_callback(test, F),
+    dgram_send(test1, get_id(test), "Hello World!").
 
 
 register_nodes(N)

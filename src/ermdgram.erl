@@ -2,7 +2,7 @@
 
 -define(MAX_QUEUE, 1024 * 4).
 
--export([init/2, send_dgram/4, set_recv_func/2, dispatcher/5]).
+-export([init/2, send_dgram/5, set_recv_func/2, dispatcher/5]).
 
 -record(dgram_state, {id, requested, queue, recv}).
 
@@ -15,9 +15,10 @@ set_recv_func(State, Func) ->
     State#dgram_state{recv = Func}.
 
 
-send_dgram(Socket, State, ID, Dgram) ->
+send_dgram(UDPServer, Socket, State, ID, Dgram) ->
     F = fun() ->
-                Tag = ermudp:dtun_request(),
+                Tag = ermudp:dtun_request(UDPServer, ID),
+                io:format("send_dgram: request~n"),
                 receive
                     {request, Tag, {IP, Port}} ->
                         ets:insert(State#dgram_state.requested,
@@ -30,7 +31,7 @@ send_dgram(Socket, State, ID, Dgram) ->
                 end
         end,
 
-    case ets:lookup(requested, ID) of
+    case ets:lookup(State#dgram_state.requested, ID) of
         [{ID, IP, Port, _Sec} | _] ->
             Msg = {State#dgram_state.id, Dgram},
             send_msg(Socket, IP, Port, Msg);
@@ -46,12 +47,11 @@ send_dgram(Socket, State, ID, Dgram) ->
                                     Q
                             end;
                         _ ->
-                            []
+                            [Dgram]
                     end,
             ets:insert(State#dgram_state.queue, {ID, Queue}),
             spawn_link(F)
-    end,
-    State.
+    end.
 
 
 init(UDPServer, ID) ->
@@ -89,8 +89,7 @@ dispatcher(State, Socket, IP, Port, {FromID, Dgram}) ->
                {FromID, IP, Port, ermlibs:get_sec()}),
 
     Recv = State#dgram_state.recv,
-    Data = binary_to_term(Dgram),
-    Recv(Socket, IP, Port, FromID, Data),
+    Recv(Socket, IP, Port, FromID, Dgram),
     State;
 dispatcher(State, _, _, _, _) ->
     State.
