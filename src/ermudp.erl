@@ -23,6 +23,8 @@
 -export([dht_put/3, dht_index_get/5]).
 -export([dht_ping/4]).
 
+-export([send_dgram/3]).
+
 -export([expire/1]).
 
 -export([get_id/1, set_dump/2]).
@@ -36,7 +38,8 @@
          terminate/2, code_change/3]).
 
 -record(state, {server, socket, id, nat_state = undefined,
-                dict_nonce, dtun_state, dht_state, peers, dump = false}).
+                dict_nonce, dtun_state, dht_state, dgram_state,
+                peers, dump = false}).
 
 
 %% 1. p1(Socket1) -------------> p2: echo, Nonce1
@@ -149,6 +152,10 @@ dht_index_get(Server, Key, Index, IP, Port) ->
     gen_server:call(Server, {dht_index_get, Key, Index, IP, Port}).
 
 
+send_dgram(Server, ID, Data) ->
+    gen_server:call(Server, {send_dgram, ID, Data}).
+
+
 expire(Server) ->
     gen_server:cast(Server, expire).
 
@@ -177,15 +184,17 @@ init([Server, Port | _]) ->
             %% io:format("init: ID = ~p~n", [ID]),
 
             Dict = ets:new(Server, [public]),
-            DTUNState = ermdtun:init(Server, PeersServer, ID),
-            DHTState  = ermdht:init(Server, PeersServer, ID),
-            State = #state{server     = Server,
-                           socket     = Socket,
-                           id         = ID,
-                           dict_nonce = Dict,
-                           dtun_state = DTUNState,
-                           dht_state  = DHTState,
-                           peers      = PeersServer},
+            DTUNState  = ermdtun:init(Server, PeersServer, ID),
+            DHTState   = ermdht:init(Server, PeersServer, ID),
+            DGramState = ermdgram:init(Server, ID),
+            State = #state{server      = Server,
+                           socket      = Socket,
+                           id          = ID,
+                           dict_nonce  = Dict,
+                           dtun_state  = DTUNState,
+                           dht_state   = DHTState,
+                           dgram_state = DGramState,
+                           peers       = PeersServer},
             {ok, State}
     end.
 
@@ -198,6 +207,10 @@ init([Server, Port | _]) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
+handle_call({send_dgram, ID, Data}, _From, State) ->
+    ermdgram:send_dgram(State#state.socket, State#state.dgram_state, ID, Data),
+    Reply = ok,
+    {reply, Reply, State};
 handle_call({index_get, Key, Index, IP, Port}, {PID, Tag}, State) ->
     ermdht:index_get(State#state.socket, State#state.dht_state,
                      Key, Index, IP, Port, PID, Tag),
@@ -494,6 +507,10 @@ dispatcher(State, Socket, IP, Port, {dht, Msg}) ->
     DHTState = ermdht:dispatcher(State#state.server, State#state.dht_state,
                                  Socket, IP, Port, Msg),
     State#state{dht_state = DHTState};
+dispatcher(State, Socket, IP, Port, {dgram, Msg}) ->
+    DgramState = ermdgram:dispatcher(State#state.dht_state,
+                                     Socket, IP, Port, Msg),
+    State#state{dgram_state = DgramState};
 dispatcher(State, _, _IP, _Port, _Data) ->
     State.
 
