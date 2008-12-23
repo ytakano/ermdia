@@ -13,7 +13,8 @@
 -export([start/2, start/3, start_link/2, start_link/3, stop/1]).
 -export([join/3]).
 
--export([put_data/3, get_data/2, index_get/4]).
+-export([get_id/1]).
+-export([put_data/3, get_data/4, find_value/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -48,19 +49,28 @@ join(Server, Host, Port) ->
 
 %% self() ! {put, Tag, true | false}
 put_data(Server, Key, Value) ->
-    ok.
+    UDPServer = to_udp(Server),
+    ermudp:dht_put(UDPServer, Key, Value).
 
 %% self() ! {find_value, Tag,
 %%           false | {Index, #Total, Value, Elapsed_Time},
 %%           false | {IP, Port}}
-get_data(Server, Key) ->
-    ok.
+find_value(Server, Key) ->
+    UDPServer = to_udp(Server),
+    ermudp:dht_find_value(UDPServer, Key).
 
-%% self() ! {index_get, Tag,
+%% self() ! {get, Tag,
 %%           false | {Index, #Total, Value, Elapsed_Time},
 %%           {IP, Port}}
-index_get(Server, Key, Index, From) ->
-    ok.
+get_data(Server, Key, Index, {IP, Port}) ->
+    UDPServer = to_udp(Server),
+    ermudp:dht_index_get(UDPServer, Key, Index, IP, Port).
+
+
+get_id(Server) ->
+    UDPServer = to_udp(Server),
+    ermudp:get_id(UDPServer).
+
 
 %%====================================================================
 %% gen_server callbacks
@@ -122,21 +132,21 @@ handle_call({join, Host, Port}, {PID, Tag}, State) ->
     %% join to dtun
     F2 = fun() ->
                  io:format("join: joining dtun...~n"),
-                Tag2 = ermudp:dtun_find_node(State#state.udp, Host, Port),
-                receive
-                    {find_node, Tag2, Nodes} ->
-                        Nodes0 = [X || {_, {_, IP0, Port0}} = X <- Nodes,
-                                       IP0 =/= localhost, Port0 =/= 0],
-                        if
-                            length(Nodes0) > 0 ->
-                                ermudp:dtun_register(State#state.udp),
-                                F1();
-                            true ->
-                                catch PID ! {join, false}
-                        end
-                after 10000 ->
-                        catch PID ! {join, false}
-                end
+                 Tag2 = ermudp:dtun_find_node(State#state.udp, Host, Port),
+                 receive
+                     {find_node, Tag2, Nodes} ->
+                         Nodes0 = [X || {_, {_, IP0, Port0}} = X <- Nodes,
+                                        IP0 =/= localhost, Port0 =/= 0],
+                         if
+                             length(Nodes0) > 0 ->
+                                 ermudp:dtun_register(State#state.udp),
+                                 F1();
+                             true ->
+                                 catch PID ! {join, false}
+                         end
+                 after 10000 ->
+                         catch PID ! {join, false}
+                 end
          end,
 
     %% detect nat
@@ -272,3 +282,6 @@ loop(UDPServer) ->
 
     loop(UDPServer).
 
+
+to_udp(Server) ->
+    list_to_atom(atom_to_list(Server) ++ ".udp").

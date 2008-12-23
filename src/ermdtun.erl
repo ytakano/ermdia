@@ -354,7 +354,7 @@ init(UDPServer, PeersServer, ID) ->
                 peers      = PeersServer,
                 timed_out  = ets:new(TID1, [public]),
                 dict_nonce = ets:new(TID2, [public]),
-                contacted   = ets:new(TID3, [public])}.
+                contacted  = ets:new(TID3, [public])}.
 
 
 dispatcher(_UDPServer, State, _Socket, IP, Port, {register, FromID}) ->

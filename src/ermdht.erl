@@ -72,7 +72,7 @@ index_get(_, State, Key, Index, localhost, 0, PID, Tag) ->
                          end,
                    {Index, Len, Value, Sec}
            end,
-    catch PID ! {index_get, Tag, Data, {localhost, 0}};
+    catch PID ! {get, Tag, Data, {localhost, 0}};
 index_get(Socket, State, Key, Index, IP, Port, PID, Tag) ->
     <<ID:160>> = crypto:sha(term_to_binary(Key)),
     Nonce = ermlibs:gen_nonce(),
@@ -383,7 +383,7 @@ dispatcher(_UDPServer, State, _Socket, IP, Port,
     case ets:lookup(State#dht_state.dict_nonce, {index_get, ID, Key, Nonce}) of
         [{{ID, Key, Nonce}, PID, Tag} | _] ->
             ets:delete(State#dht_state.dict_nonce, {index_get, ID, Key, Nonce}),
-            catch PID ! {index_get, Tag, Data, {IP, Port}};
+            catch PID ! {get, Tag, Data, {IP, Port}};
         _ ->
             ok
     end,
