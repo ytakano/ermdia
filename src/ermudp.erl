@@ -515,9 +515,9 @@ dispatcher(State, Socket, IP, Port, {dht, Msg}) ->
     DHTState = ermdht:dispatcher(State#state.server, State#state.dht_state,
                                  Socket, IP, Port, Msg),
     State#state{dht_state = DHTState};
-dispatcher(State, Socket, IP, Port, {dgram, Msg}) ->
+dispatcher(State, _Socket, IP, Port, {dgram, Msg}) ->
     DgramState = ermdgram:dispatcher(State#state.dgram_state,
-                                     Socket, IP, Port, Msg),
+                                     IP, Port, Msg),
     State#state{dgram_state = DgramState};
 dispatcher(State, _, _IP, _Port, _Data) ->
     State.
@@ -768,7 +768,7 @@ run_test3() ->
     put_dht(N1 + N2),
     find_value_dht(N1 + N2),
 
-    F = fun(_Socket, _IP, _Port, _ID, Data) ->
+    F = fun(_ID, Data) ->
                 io:format("recv dgram: Data = ~p~n", [Data])
         end,
     
