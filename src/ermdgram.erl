@@ -1,8 +1,9 @@
 -module(ermdgram).
 
 -define(MAX_QUEUE, 1024 * 4).
+-define(DB_TTL, 240).
 
--export([init/2, send_dgram/5, set_recv_func/2, dispatcher/4]).
+-export([init/2, send_dgram/5, set_recv_func/2, dispatcher/4, expire/1]).
 
 -record(dgram_state, {id, requested, queue, recv}).
 
@@ -93,3 +94,33 @@ dispatcher(State, IP, Port, {FromID, Dgram}) ->
 dispatcher(State, _, _, _) ->
     State.
 
+
+expire(State) ->
+    F = fun() ->
+                expire_requested(State)
+        end,
+    spawn_link(F).
+
+
+expire_requested(State) ->
+    Dict = State#dgram_state.requested,
+    expire_requested(ets:first(Dict), Dict, ermlibs:get_sec()).
+expire_requested(Key, _, _)
+  when Key =:= '$end_of_table' ->
+    ok;
+expire_requested(Key, Dict, Now) ->
+    Next = ets:next(Dict, Key),
+    
+    case ets:lookup(Dict, Key) of
+        [{_, _, _, Sec} | _] ->
+            if
+                Now - Sec > ?DB_TTL ->
+                    ets:delete(Dict, Key);
+                true ->
+                    ok
+            end;
+        _ ->
+            ok
+    end,
+    
+    expire_requested(Next, Dict, Now).

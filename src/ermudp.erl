@@ -417,6 +417,7 @@ handle_cast(expire, State) ->
     ermdtun:expire(State#state.dtun_state),
     ermdht:expire(State#state.dht_state),
     ermpeers:expire(State#state.peers),
+    ermdgram:expire(State#state.dgram_state),
 
     {noreply, State};
 handle_cast(stop, State) ->
