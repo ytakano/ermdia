@@ -40,6 +40,12 @@ request(UDPServer, Socket, State, ID, PID, Tag) ->
                     receive
                         {find_value, Tag1, false, false} ->
                             PID ! {request, Tag, false};
+                        {find_value, Tag1, {IP, Port, _Sec}, {localhost, 0}} ->
+                            ping(Socket, State, IP, Port, self(), make_ref()),
+
+                            Msg = {request, State#dtun_state.id,
+                                   ID, Nonce},
+                            send_msg(Socket, IP, Port, Msg);
                         {find_value, Tag1, {IP, Port, _Sec},
                          {FromIP, FromPort}} ->
                             ping(Socket, State, IP, Port, self(), make_ref()),
@@ -131,7 +137,8 @@ find_value(Socket, State, NAT, ID, PID, Tag) ->
         [] ->
             find_node_value(Socket, State, NAT, ID, PID, Tag, true);
         [{ID, IP, Port, Sec} | _] ->
-            catch PID ! {find_value, Tag, {IP, Port, ermlibs:get_sec() - Sec}}
+            catch PID ! {find_value, Tag, {IP, Port, ermlibs:get_sec() - Sec},
+                         {localhost, 0}}
     end.
 
 
@@ -463,12 +470,13 @@ dispatcher(_UDPServer, State, Socket, _IP, _Port,
     Msg = {request_reply, State#dtun_state.id, Nonce},
     send_msg(Socket, IP, Port, Msg),
     State;
-dispatcher(_UDPServer, State, _Socket, _IP, _Port,
+dispatcher(_UDPServer, State, _Socket, IP, Port,
            {request_reply, _ID, Nonce}) ->
+    %% io:format("recv request_reply: Nonce = ~p~n", [Nonce]),
     case ets:lookup(State#dtun_state.dict_nonce, {request, Nonce}) of
         [{{request, Nonce}, PID, Tag} | _] ->
             ets:delete(State#dtun_state.dict_nonce, {request, Nonce}),
-            catch PID ! {request, Tag, true};
+            catch PID ! {request, Tag, {IP, Port}};
         _ ->
             ok
     end,

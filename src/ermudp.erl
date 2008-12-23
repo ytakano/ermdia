@@ -25,7 +25,7 @@
 
 -export([expire/1]).
 
--export([get_id/1]).
+-export([get_id/1, set_dump/2]).
 -export([print_state/1]).
 -export([run_test1/0,
          run_test2/0, stop_test2/0,
@@ -36,7 +36,7 @@
          terminate/2, code_change/3]).
 
 -record(state, {server, socket, id, nat_state = undefined,
-                dict_nonce, dtun_state, dht_state, peers}).
+                dict_nonce, dtun_state, dht_state, peers, dump = false}).
 
 
 %% 1. p1(Socket1) -------------> p2: echo, Nonce1
@@ -100,6 +100,9 @@ get_nat_state(Server) ->
 
 get_id(Server) ->
     gen_server:call(Server, get_id).
+
+set_dump(Server, IsDump) ->
+    gen_server:call(Server, {set_dump, IsDump}).
 
 print_state(Server) ->
     gen_server:call(Server, print_state).
@@ -358,6 +361,9 @@ handle_call(get_nat_state, _From, State) ->
 handle_call(get_id, _From, State) ->
     Reply = State#state.id,
     {reply, Reply, State};
+handle_call({set_dump, IsDump}, _From, State) ->
+    Reply = ok,
+    {reply, Reply, State#state{dump = IsDump}};
 handle_call(print_state, _From, State) ->
     case inet:sockname(State#state.socket) of
         {ok, {IP, Port}} ->
@@ -408,9 +414,15 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 handle_info({udp, Socket, IP, Port, Bin}, State) ->
     Term = binary_to_term(Bin),
-%%    io:format("recv udp: ID = ~p~n          Term = ~p~n",
-%%              [State#state.id, Term]),
 
+    case State#state.dump of
+        true ->
+            io:format("recv udp: ID = ~p~n          Term = ~p~n",
+                      [State#state.id, Term]);
+        _ ->
+            ok
+    end,
+    
     ermpeers:add_contacted(State#state.peers, IP, Port),
 
     {noreply, dispatcher(State, Socket, IP, Port, Term)};
@@ -787,7 +799,8 @@ request(N)
             io:format("request: N = ~p, Ret = ~p~n", [N, Ret])
     after 1000 ->
             io:format("request: timed out, N = ~p~n", [N])
-    end;
+    end,
+    request(N - 1);
 request(_) ->
     ok.
 

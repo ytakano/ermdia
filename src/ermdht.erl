@@ -99,7 +99,9 @@ ping(UDPServer, Socket, State, ID, Host, Port, PID, Tag) ->
     F2 = fun() ->
                  Tag = ermudp:dtun_request(UDPServer, ID),
                  receive
-                     {request, Tag, true} ->
+                     {request, Tag, false} ->
+                         ok;
+                     {request, Tag, _} ->
                          F1()
                  after 1000 ->
                          ok
@@ -330,10 +332,10 @@ send_find_node(Socket, UDPServer, Peers, MyID, ID, Nonce, [Node | T],
                     F = fun() ->
                                 Tag = ermudp:dtun_request(UDPServer, ID0),
                                 receive
-                                    {request, Tag, true} ->
-                                        PID ! {request, ID0, IP, Port};
                                     {request, Tag, false} ->
-                                        PID ! {timeout, ID0, IP, Port}
+                                        PID ! {timeout, ID0, IP, Port};
+                                    {request, Tag, _} ->
+                                        PID ! {request, ID0, IP, Port}
                                 after 2000 ->
                                         catch PID ! {timeout, ID0, IP, Port}
                                 end
