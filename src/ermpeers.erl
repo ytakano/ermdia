@@ -66,7 +66,7 @@ stop(Server) ->
 init([Server]) ->
     TID = list_to_atom(atom_to_list(Server) ++ ".contacted"),
 
-    {ok, #state{global = [], contacted = ets:new(TID, [])}}.
+    {ok, #state{global = [], contacted = ets:new(TID, [public])}}.
 
 %%--------------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
@@ -180,4 +180,4 @@ expire_contacted(Key, Dict, Now) ->
     end,
     
     expire_contacted(Next, Dict, Now).
-    
+

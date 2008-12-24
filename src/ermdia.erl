@@ -47,7 +47,7 @@ start(Server, Port, IsGlobal) ->
 stop(Server) ->
     gen_server:cast(Server, stop).
 
-%% self() ! {join, false | true}
+%% self() ! {join, Tag, false | true}
 join(Server, Host, Port) ->
     gen_server:call(Server, {join, Host, Port}).
 
@@ -143,12 +143,12 @@ handle_call({join, Host, Port}, {PID, Tag}, State) ->
                      {find_node, Tag1, Nodes} ->
                          if
                              length(Nodes) > 1 ->
-                                 catch PID ! {join, true};
+                                 catch PID ! {join, Tag, true};
                              true ->
-                                 catch PID ! {join, false}
+                                 catch PID ! {join, Tag, false}
                          end
                  after 10000 ->
-                         catch PID ! {join, false}
+                         catch PID ! {join, Tag, false}
                  end
          end,
 
@@ -165,10 +165,10 @@ handle_call({join, Host, Port}, {PID, Tag}, State) ->
                                  ermudp:dtun_register(State#state.udp),
                                  F1();
                              true ->
-                                 catch PID ! {join, false}
+                                 catch PID ! {join, Tag, false}
                          end
                  after 10000 ->
-                         catch PID ! {join, false}
+                         catch PID ! {join, Tag, false}
                  end
          end,
 
@@ -177,17 +177,17 @@ handle_call({join, Host, Port}, {PID, Tag}, State) ->
                  %% io:format("join: detecting nat...~n"),
                  case ermudp:detect_nat(State#state.udp, Host, Port) of
                      false ->
-                         catch PID ! {join, false};
+                         catch PID ! {join, Tag, false};
                      Tag3 ->
                          receive
                              {detect_nat, Tag3, error} ->
                                  %% io:format("join: detecting nat, error~n"),
-                                 catch PID ! {join, false};
+                                 catch PID ! {join, Tag, false};
                              {detect_nat, Tag3, _} ->
                                  F2()
                          after 10000 ->
                                  %% io:format("join: detecting nat, timed out~n"),
-                                 catch PID ! {join, false}
+                                 catch PID ! {join, Tag, false}
                          end
                  end
          end,
