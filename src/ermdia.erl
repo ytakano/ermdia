@@ -12,9 +12,13 @@
 %% API
 -export([start/2, start/3, start_link/2, start_link/3, stop/1]).
 -export([join/3]).
+-export([print_state/1]).
+-export([set_dump/2]).
 
 -export([get_id/1]).
 -export([put_data/3, get_data/4, find_value/2]).
+
+-export([send_msg/3, set_recv_callback/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -72,6 +76,25 @@ get_id(Server) ->
     ermudp:get_id(UDPServer).
 
 
+send_msg(Server, ID, Data) ->
+    UDPServer = to_udp(Server),
+    ermudp:dgram_send(UDPServer, ID, Data).
+
+%% Func = fun(ID, Data)
+set_recv_callback(Server, Func) ->
+    UDPServer = to_udp(Server),
+    ermudp:dgram_set_callback(UDPServer, Func).
+
+
+print_state(Server) ->
+    UDPServer = to_udp(Server),
+    ermudp:print_state(UDPServer).
+
+set_dump(Server, IsDump) ->
+    UDPServer = to_udp(Server),
+    ermudp:set_dump(UDPServer, IsDump).
+
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -113,7 +136,7 @@ init([Server, Port, IsGlobal | _]) ->
 handle_call({join, Host, Port}, {PID, Tag}, State) ->
     %% join to dht
     F1 = fun() ->
-                 io:format("join: joining dht...~n"),
+                 %% io:format("join: joining dht...~n"),
                  Tag1 = ermudp:dht_find_node(State#state.udp,
                                              Host, Port),
                  receive
@@ -131,7 +154,7 @@ handle_call({join, Host, Port}, {PID, Tag}, State) ->
 
     %% join to dtun
     F2 = fun() ->
-                 io:format("join: joining dtun...~n"),
+                 %% io:format("join: joining dtun...~n"),
                  Tag2 = ermudp:dtun_find_node(State#state.udp, Host, Port),
                  receive
                      {find_node, Tag2, Nodes} ->
@@ -151,19 +174,19 @@ handle_call({join, Host, Port}, {PID, Tag}, State) ->
 
     %% detect nat
     F3 = fun() ->
-                 io:format("join: detecting nat...~n"),
+                 %% io:format("join: detecting nat...~n"),
                  case ermudp:detect_nat(State#state.udp, Host, Port) of
                      false ->
                          catch PID ! {join, false};
                      Tag3 ->
                          receive
                              {detect_nat, Tag3, error} ->
-                                 io:format("join: detecting nat, error~n"),
+                                 %% io:format("join: detecting nat, error~n"),
                                  catch PID ! {join, false};
                              {detect_nat, Tag3, _} ->
                                  F2()
                          after 10000 ->
-                                 io:format("join: detecting nat, timed out~n"),
+                                 %% io:format("join: detecting nat, timed out~n"),
                                  catch PID ! {join, false}
                          end
                  end
