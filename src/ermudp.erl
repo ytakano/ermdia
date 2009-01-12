@@ -20,7 +20,7 @@
 
 
 -export([dht_find_node/3, dht_find_node/2, dht_find_value/2]).
--export([dht_put/3, dht_index_get/5]).
+-export([dht_put/4, dht_index_get/5, dht_reput/1, dht_reput_finished/1]).
 -export([dht_ping/4]).
 
 -export([dgram_send/3, dgram_set_callback/2]).
@@ -145,8 +145,14 @@ dht_find_value(Server, Key) ->
 dht_ping(Server, ID, Host, Port) ->
     gen_server:call(Server, {dht_ping, ID, Host, Port}).
 
-dht_put(Server, Key, Value) ->
-    gen_server:call(Server, {dht_put, Key, Value}).
+dht_put(Server, Key, Value, TTL) ->
+    gen_server:call(Server, {dht_put, Key, Value, TTL}).
+
+dht_reput(Server) ->
+    gen_server:call(Server, dht_reput).
+
+dht_reput_finished(Server) ->
+    gen_server:call(Server, dht_reput_finished).
 
 dht_index_get(Server, Key, Index, IP, Port) ->
     gen_server:call(Server, {dht_index_get, Key, Index, IP, Port}).
@@ -224,9 +230,9 @@ handle_call({index_get, Key, Index, IP, Port}, {PID, Tag}, State) ->
                      Key, Index, IP, Port, PID, Tag),
     Reply = Tag,
     {reply, Reply, State};
-handle_call({dht_put, Key, Value}, {PID, Tag}, State) ->
+handle_call({dht_put, Key, Value, TTL}, {PID, Tag}, State) ->
     ermdht:put_data(State#state.server, State#state.socket,
-                    State#state.dht_state, Key, Value, PID, Tag),
+                    State#state.dht_state, Key, Value, TTL, PID, Tag),
     Reply = Tag,
     {reply, Reply, State};
 handle_call({dht_find_node, Host, Port}, {PID, Tag}, State) ->
@@ -249,6 +255,15 @@ handle_call({dht_ping, ID, Host, Port}, {PID, Tag}, State) ->
                 State#state.dht_state, ID, Host, Port, PID, Tag),
     Reply = Tag,
     {reply, Reply, State};
+handle_call(dht_reput, _From, State) ->
+    DHTState = ermdht:reput(State#state.server, State#state.socket,
+                            State#state.dht_state),
+    Reply = ok,
+    {reply, Reply, State#state{dht_state = DHTState}};
+handle_call(dht_reput_finished, _From, State) ->
+    DHTState = ermdht:reput_finished(State#state.dht_state),
+    Reply = ok,
+    {reply, Reply, State#state{dht_state = DHTState}};
 handle_call(dtun_expiration, _From, State) ->
     ermdtun:expiration(State#state.dtun_state),
     
@@ -863,7 +878,7 @@ put_dht(N)
     S0 = "test" ++ integer_to_list(N),
     S = list_to_atom(S0),
 
-    Tag = dht_put(S, N, N),
+    Tag = dht_put(S, N, N, 300),
     receive
         {put, Tag, Ret} ->
             io:format("dht_put: N = ~p, Ret = ~p~n", [N, Ret])

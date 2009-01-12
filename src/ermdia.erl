@@ -16,7 +16,7 @@
 -export([set_dump/2]).
 
 -export([get_id/1]).
--export([put_data/3, get_data/4, find_value/2]).
+-export([put_data/4, get_data/4, find_value/2]).
 
 -export([send_msg/3, set_recv_callback/2]).
 
@@ -52,9 +52,9 @@ join(Server, Host, Port) ->
     gen_server:call(Server, {join, Host, Port}).
 
 %% self() ! {put, Tag, true | false}
-put_data(Server, Key, Value) ->
+put_data(Server, Key, Value, TTL) ->
     UDPServer = to_udp(Server),
-    ermudp:dht_put(UDPServer, Key, Value).
+    ermudp:dht_put(UDPServer, Key, Value, TTL).
 
 %% self() ! {find_value, Tag,
 %%           false | {Index, #Total, Value, Elapsed_Time},
@@ -302,6 +302,10 @@ loop(UDPServer) ->
     after 30 * 1000 ->
             ok
     end,
+
+
+    %% reput data of dht
+    ermudp:dht_reput(UDPServer),
 
     loop(UDPServer).
 
