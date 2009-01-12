@@ -16,7 +16,6 @@
 -define(MAX_STORE, 3).
 
 -define(DB_TIMEDOUT_TTL, 300).
--define(DB_TTL, 300).
 
 
 -record(dht_state, {id, table, timed_out, dict_nonce, peers, db, db_sec,
