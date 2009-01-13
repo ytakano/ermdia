@@ -128,7 +128,7 @@ dispatcher(_UDPServer, State, _Socket, IP, Port,
     case ets:lookup(State#proxy_state.db_nonce, Nonce) of
         [{Nonce, PID, Tag, PID0} | _] ->
             PID0 ! terminate,
-            PID ! {find_node, Tag, Val, {IP, Port}};
+            PID ! {find_value, Tag, Val, {IP, Port}};
         _ ->
             ok
     end,

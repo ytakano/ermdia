@@ -23,7 +23,7 @@
 -export([dht_put/4, dht_index_get/5, dht_reput/1, dht_reput_finished/1]).
 -export([dht_ping/4]).
 
--export([dgram_send/3, dgram_send/4, dgram_add_forward/4,
+-export([dgram_send/3, dgram_send/4, dgram_ping/4, dgram_add_forward/4,
          dgram_set_callback/2]).
 
 -export([proxy_register/1, proxy_set_server/3]).
@@ -170,6 +170,9 @@ dgram_send(Server, ID, Data) ->
 dgram_send(Server, ID, Src, Data) ->
     gen_server:call(Server, {dgram_send, ID, Src, Data}).
 
+dgram_ping(Server, ID, IP, Port) ->
+    gen_server:call(Server, {dgram_ping, ID, IP, Port}).
+
 dgram_set_callback(Server, Func) ->
     gen_server:call(Server, {dgram_set_callback, Func}).
 
@@ -272,6 +275,11 @@ handle_call({dgram_send, ID, Src, Data}, _From, State) ->
     ermdgram:send_dgram(State#state.server, State#state.socket,
                         State#state.dgram_state, ID, Src, Data),
     Reply = ok,
+    {reply, Reply, State};
+handle_call({dgram_ping, ID, IP, Port}, {PID, Tag}, State) ->
+    ermdgram:send_ping(State#state.socket, State#state.dgram_state,
+                       ID, IP, Port, PID, Tag),
+    Reply = Tag,
     {reply, Reply, State};
 handle_call({index_get, Key, Index, IP, Port}, {PID, Tag}, State) ->
     ermdht:index_get(State#state.socket, State#state.dht_state,
@@ -863,19 +871,29 @@ run_test3() ->
     dgram_set_callback(test, F),
     dgram_send(test1, get_id(test), "Hello World!"),
 
+    Tag0 = dgram_ping(test1, get_id(test), "localhost", 10000),
+    receive
+        {ping, Tag0, Ret} ->
+            io:format("dgram_ping: Ret = ~p~n", [Ret])
+    after 10000 ->
+            io:format("dgram_ping: timed out~n")
+    end,
+
     start_link(test101, 10101),
     set_nat_state(test101, symmetric),
 
-    Tag = dtun_find_node(test101, "localhost", 10000),
+    Tag1 = dtun_find_node(test101, "localhost", 10000),
 
     receive
-        {find_node, Tag, _Nodes} ->
+        {find_node, Tag1, _Nodes} ->
             io:format("start symmetric: ok~n")
     after 10000 ->
             io:format("start symmetric: timed out~n")
     end,
 
     proxy_register(test101),
+
+    ermlibs:sleep(3000),
     dht_put(test101, 101, 101, 300),
     Tag2 = dht_find_value(test101, 1),
     receive
