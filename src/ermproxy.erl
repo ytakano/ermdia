@@ -4,10 +4,11 @@
 -export([dispatcher/6]).
 -export([send_dgram/4]).
 -export([put_data/7]).
--export([init/1]).
+-export([init/2]).
 -export([set_server/3]).
+-export([find_value/5]).
 
--record(proxy_state, {id, proxy_server = {}}).
+-record(proxy_state, {id, proxy_server = {}, db_nonce}).
 
 
 set_server(State, IP, Port) ->
@@ -22,6 +23,32 @@ send_dgram(Socket, State, ID, Data) ->
     case State#proxy_state.proxy_server of
         {IP, Port} ->
             Msg = {dgram, State#proxy_state.id, ID, Data},
+            send_msg(Socket, IP, Port, Msg);
+        _ ->
+            ok
+    end.
+
+
+%% p1 -> p2: find_value, ID(p1), ID, Nonce
+find_value(Socket, State, Key, PID, Tag) ->
+    case State#proxy_state.proxy_server of
+        {IP, Port} ->
+            Nonce = ermlibs:gen_nonce(),
+            F = fun() ->
+                        receive
+                            terminate ->
+                                ok
+                        after 30000 ->
+                                ets:delete(State#proxy_state.db_nonce, Nonce),
+                                catch PID ! {find_value, Tag, false, false}
+                        end
+                end,
+
+            Msg = {find_value, State#proxy_state.id, Key, Nonce},
+
+            PID0 = spawn_link(F),
+            ets:insert(State#proxy_state.db_nonce, {Nonce, PID, Tag, PID0}),
+
             send_msg(Socket, IP, Port, Msg);
         _ ->
             ok
@@ -95,9 +122,43 @@ dispatcher(UDPServer, State, _Socket, _IP, _Port,
 
     spawn_link(F),
     State;
+dispatcher(_UDPServer, State, _Socket, IP, Port,
+           {find_value_reply, _FromID, Val, Nonce}) ->
+    %% io:format("recv find_value_reply: Port = ~p~n", [Port]),
+    case ets:lookup(State#proxy_state.db_nonce, Nonce) of
+        [{Nonce, PID, Tag, PID0} | _] ->
+            PID0 ! terminate,
+            PID ! {find_node, Tag, Val, {IP, Port}};
+        _ ->
+            ok
+    end,
+    State;
+dispatcher(UDPServer, State, Socket, IP, Port,
+           {find_value, _FromID, Key, Nonce}) ->
+    %% io:format("recv find_value: Port = ~p~n", [Port]),
+    F = fun() ->
+                Tag = ermudp:dht_find_value(UDPServer, Key),
+                receive
+                    {find_value, Tag, false, _} ->
+                        Msg = {find_value_reply, State#proxy_state.id,
+                               false, Nonce},
+                        send_msg(Socket, IP, Port, Msg);
+                    {find_value, Tag, Val, _} ->
+                        Msg = {find_value_reply, State#proxy_state.id,
+                               Val, Nonce},
+                        send_msg(Socket, IP, Port, Msg)
+                after 30000 ->
+                        ok
+                end
+        end,
+
+    spawn_link(F),
+
+    State;
 dispatcher(_, State, _, _, _, _) ->
     State.
 
 
-init(ID) ->
-    #proxy_state{id = ID}.
+init(UDPServer, ID) ->
+    TID = list_to_atom(atom_to_list(UDPServer) ++ ".ermproxy.nonce"),
+    #proxy_state{id = ID, db_nonce = ets:new(TID, [public])}.

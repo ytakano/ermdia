@@ -215,7 +215,7 @@ init([Server, Port | _]) ->
             DTUNState  = ermdtun:init(Server, PeersServer, ID),
             DHTState   = ermdht:init(Server, PeersServer, ID),
             DGramState = ermdgram:init(Server, ID),
-            ProxyState = ermproxy:init(ID),
+            ProxyState = ermproxy:init(Server, ID),
             State = #state{server      = Server,
                            socket      = Socket,
                            id          = ID,
@@ -301,8 +301,14 @@ handle_call({dht_find_node, ID}, {PID, Tag}, State) ->
     Reply = Tag,
     {reply, Reply, State};
 handle_call({dht_find_value, Key}, {PID, Tag}, State) ->
-    ermdht:find_value(State#state.server, State#state.socket,
-                      State#state.dht_state, Key, PID, Tag),
+    case State#state.nat_state of
+        ?STATE_SYMMETRIC ->
+            ermproxy:find_value(State#state.socket, State#state.proxy_state,
+                                Key, PID, Tag);
+        _ ->
+            ermdht:find_value(State#state.server, State#state.socket,
+                      State#state.dht_state, Key, PID, Tag)
+    end,
     Reply = Tag,
     {reply, Reply, State};
 handle_call({dht_ping, ID, Host, Port}, {PID, Tag}, State) ->
@@ -864,13 +870,21 @@ run_test3() ->
 
     receive
         {find_node, Tag, _Nodes} ->
-            io:format("start_symmetric: ok~n")
+            io:format("start symmetric: ok~n")
     after 10000 ->
-            io:format("start_symmetric: timed out~n")
+            io:format("start symmetric: timed out~n")
     end,
 
     proxy_register(test101),
-    dht_put(test101, 101, 101, 300).
+    dht_put(test101, 101, 101, 300),
+    Tag2 = dht_find_value(test101, 1),
+    receive
+        {find_value, Tag2, Value, From} ->
+            io:format("symmetric find_value: Value = ~p, From = ~p~n",
+                      [Value, From])
+    after 10000 ->
+            io:format("symmetric find_value: timed out~n")
+    end.
 
 
 register_nodes(N)

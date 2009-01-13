@@ -57,14 +57,14 @@ put_data(Server, Key, Value, TTL) ->
     ermudp:dht_put(UDPServer, Key, Value, TTL).
 
 %% self() ! {find_value, Tag,
-%%           false | {Index, #Total, Value, Elapsed_Time},
+%%           false | {Index, #Total, Value, TTL},
 %%           false | {IP, Port}}
 find_value(Server, Key) ->
     UDPServer = to_udp(Server),
     ermudp:dht_find_value(UDPServer, Key).
 
 %% self() ! {get, Tag,
-%%           false | {Index, #Total, Value, Elapsed_Time},
+%%           false | {Index, #Total, Value, TTL},
 %%           {IP, Port}}
 get_data(Server, Key, Index, {IP, Port}) ->
     UDPServer = to_udp(Server),
