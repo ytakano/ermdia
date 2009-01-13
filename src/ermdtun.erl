@@ -70,12 +70,12 @@ request(UDPServer, Socket, State, ID, PID, Tag) ->
 
 
 %% 1.  p1 -> p2: register, ID(p1)
-register_node(UDPServer, Socket, State, PID, Tag) ->
+register_node(UDPServer, Socket, ID, PID, Tag) ->
     F = fun() ->
-                Tag1 = ermudp:dtun_find_node(UDPServer, State#dtun_state.id),
+                Tag1 = ermudp:dtun_find_node(UDPServer, ID),
                 receive
                     {find_node, Tag1, Nodes} ->
-                        register2nodes(Socket, State#dtun_state.id, Nodes,
+                        register2nodes(Socket, ID, Nodes,
                                        ?MAX_REGISTER),
                         catch PID ! {register, Tag, true}
                 after 30000 ->

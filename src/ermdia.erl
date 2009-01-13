@@ -258,8 +258,10 @@ loop(UDPServer) ->
     Rnd = random:uniform(60),
     ermlibs:sleep((120 + Rnd) * 1000),
 
+    NatState = ermudp:get_nat_state(UDPServer),
+
     %% detect types of NAT
-    case ermudp:get_nat_state(UDPServer) of
+    case NatState of
         nat ->
             Peers = list_to_atom(atom_to_list(UDPServer) ++ ".peers"),
             Nodes0 = ermpeers:get_global(Peers),
@@ -270,6 +272,9 @@ loop(UDPServer) ->
                     Tag0 = ermudp:detect_nat_type(UDPServer,
                                                   IP1, Port1, IP2, Port2),
                     receive
+                        {detect_nat_type, Tag0, symmetric} ->
+                            ermudp:proxy_register(UDPServer),
+                            ok;
                         {detect_nat_type, Tag0, _} ->
                             ok
                     after 30 * 1000 ->
@@ -285,28 +290,35 @@ loop(UDPServer) ->
     %% expire DBs
     ermudp:expire(UDPServer),
 
-    %% register to dtun
-    Tag1 = ermudp:dtun_register(UDPServer),
-    receive
-        {register, Tag1, _} ->
-            ok
-    after 30 * 1000 ->
-            ok
-    end,
+
+    case NatState of
+        symmetric ->
+            %% register to proxy
+            ermudp:proxy_register(UDPServer);
+        _ ->
+            %% register to dtun
+            Tag1 = ermudp:dtun_register(UDPServer),
+            receive
+                {register, Tag1, _} ->
+                    ok
+            after 30 * 1000 ->
+                    ok
+            end,
+            
     
-    %% maintain routing table
-    Tag2 = ermudp:dht_find_node(UDPServer, ermudp:get_id(UDPServer)),
-    receive
-        {find_node, Tag2, _} ->
-            ok
-    after 30 * 1000 ->
-            ok
+            %% maintain routing table
+            Tag2 = ermudp:dht_find_node(UDPServer, ermudp:get_id(UDPServer)),
+            receive
+                {find_node, Tag2, _} ->
+                    ok
+            after 30 * 1000 ->
+                    ok
+            end,
+
+            %% reput data of dht
+            ermudp:dht_reput(UDPServer)
     end,
-
-
-    %% reput data of dht
-    ermudp:dht_reput(UDPServer),
-
+            
     loop(UDPServer).
 
 

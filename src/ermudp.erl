@@ -16,14 +16,17 @@
 
 -export([dtun_find_node/3, dtun_find_node/2, dtun_find_value/2]).
 -export([dtun_ping/3]).
--export([dtun_register/1, dtun_request/2, dtun_expiration/1]).
+-export([dtun_register/1, dtun_register/2, dtun_request/2, dtun_expiration/1]).
 
 
 -export([dht_find_node/3, dht_find_node/2, dht_find_value/2]).
 -export([dht_put/4, dht_index_get/5, dht_reput/1, dht_reput_finished/1]).
 -export([dht_ping/4]).
 
--export([dgram_send/3, dgram_set_callback/2]).
+-export([dgram_send/3, dgram_send/4, dgram_add_forward/4,
+         dgram_set_callback/2]).
+
+-export([proxy_register/1, proxy_set_server/3]).
 
 -export([expire/1]).
 
@@ -38,7 +41,7 @@
          terminate/2, code_change/3]).
 
 -record(state, {server, socket, id, nat_state = undefined,
-                dict_nonce, dtun_state, dht_state, dgram_state,
+                dict_nonce, dtun_state, dht_state, dgram_state, proxy_state,
                 peers, dump = false}).
 
 
@@ -129,6 +132,9 @@ dtun_request(Server, ID) ->
 dtun_register(Server) ->
     gen_server:call(Server, dtun_register).
 
+dtun_register(Server, ID) ->
+    gen_server:call(Server, {dtun_register, ID}).
+
 dtun_expiration(Server) ->
     gen_server:call(Server, dtun_expiration).
 
@@ -161,8 +167,21 @@ dht_index_get(Server, Key, Index, IP, Port) ->
 dgram_send(Server, ID, Data) ->
     gen_server:call(Server, {dgram_send, ID, Data}).
 
+dgram_send(Server, ID, Src, Data) ->
+    gen_server:call(Server, {dgram_send, ID, Src, Data}).
+
 dgram_set_callback(Server, Func) ->
     gen_server:call(Server, {dgram_set_callback, Func}).
+
+dgram_add_forward(Server, ID, IP, Port) ->
+    gen_server:call(Server, {dgram_add_forward, ID, IP, Port}).
+
+
+proxy_register(Server) ->
+    gen_server:call(Server, proxy_register).
+
+proxy_set_server(Server, IP, Port) ->
+    gen_server:call(Server, {proxy_set_server, IP, Port}).
 
 
 expire(Server) ->
@@ -196,6 +215,7 @@ init([Server, Port | _]) ->
             DTUNState  = ermdtun:init(Server, PeersServer, ID),
             DHTState   = ermdht:init(Server, PeersServer, ID),
             DGramState = ermdgram:init(Server, ID),
+            ProxyState = ermproxy:init(ID),
             State = #state{server      = Server,
                            socket      = Socket,
                            id          = ID,
@@ -203,6 +223,7 @@ init([Server, Port | _]) ->
                            dtun_state  = DTUNState,
                            dht_state   = DHTState,
                            dgram_state = DGramState,
+                           proxy_state = ProxyState,
                            peers       = PeersServer},
             {ok, State}
     end.
@@ -216,13 +237,40 @@ init([Server, Port | _]) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
+handle_call(proxy_register, _From, State) ->
+    ermproxy:proxy_register(State#state.server,
+                            State#state.proxy_state,
+                            State#state.socket),
+    Reply = ok,
+    {reply, Reply, State};
+handle_call({proxy_set_server, IP, Port}, _From, State) ->
+    ProxyState = ermproxy:set_server(State#state.proxy_state, IP, Port),
+    Reply = ok,
+    {reply, Reply, State#state{proxy_state = ProxyState}};
+handle_call({dgram_add_forward, ID, IP, Port}, _From, State) ->
+    ermdgram:add_forward(State#state.dgram_state, ID, IP, Port),
+    Reply = ok,
+    {reply, Reply, State};
 handle_call({dgram_set_callback, Func}, _From, State) ->
     DgramState = ermdgram:set_recv_func(State#state.dgram_state, Func),
     Reply = ok,
     {reply, Reply, State#state{dgram_state = DgramState}};
 handle_call({dgram_send, ID, Data}, _From, State) ->
+    case State#state.nat_state of
+        ?STATE_SYMMETRIC ->
+            ermproxy:send_dgram(State#state.socket, State#state.proxy_state,
+                                ID, Data);
+        _ ->
+            ermdgram:send_dgram(State#state.server, State#state.socket,
+                                State#state.dgram_state, ID, State#state.id,
+                                Data)
+    end,
+
+    Reply = ok,
+    {reply, Reply, State};
+handle_call({dgram_send, ID, Src, Data}, _From, State) ->
     ermdgram:send_dgram(State#state.server, State#state.socket,
-                        State#state.dgram_state, ID, Data),
+                        State#state.dgram_state, ID, Src, Data),
     Reply = ok,
     {reply, Reply, State};
 handle_call({index_get, Key, Index, IP, Port}, {PID, Tag}, State) ->
@@ -231,8 +279,15 @@ handle_call({index_get, Key, Index, IP, Port}, {PID, Tag}, State) ->
     Reply = Tag,
     {reply, Reply, State};
 handle_call({dht_put, Key, Value, TTL}, {PID, Tag}, State) ->
-    ermdht:put_data(State#state.server, State#state.socket,
-                    State#state.dht_state, Key, Value, TTL, PID, Tag),
+    case State#state.nat_state of
+        ?STATE_SYMMETRIC ->
+            ermproxy:put_data(State#state.socket, State#state.proxy_state,
+                              Key, Value, TTL, PID, Tag);
+        _ ->
+            ermdht:put_data(State#state.server, State#state.socket,
+                            State#state.dht_state, Key, Value, TTL, PID, Tag)
+    end,
+
     Reply = Tag,
     {reply, Reply, State};
 handle_call({dht_find_node, Host, Port}, {PID, Tag}, State) ->
@@ -271,7 +326,13 @@ handle_call(dtun_expiration, _From, State) ->
     {reply, Reply, State};
 handle_call(dtun_register, {PID, Tag}, State) ->
     ermdtun:register_node(State#state.server, State#state.socket,
-                          State#state.dtun_state, PID, Tag),
+                          State#state.id, PID, Tag),
+
+    Reply = Tag,
+    {reply, Reply, State};
+handle_call({dtun_register, ID}, {PID, Tag}, State) ->
+    ermdtun:register_node(State#state.server, State#state.socket,
+                          ID, PID, Tag),
 
     Reply = Tag,
     {reply, Reply, State};
@@ -531,10 +592,15 @@ dispatcher(State, Socket, IP, Port, {dht, Msg}) ->
     DHTState = ermdht:dispatcher(State#state.server, State#state.dht_state,
                                  Socket, IP, Port, Msg),
     State#state{dht_state = DHTState};
-dispatcher(State, _Socket, IP, Port, {dgram, Msg}) ->
-    DgramState = ermdgram:dispatcher(State#state.dgram_state,
+dispatcher(State, Socket, IP, Port, {dgram, Msg}) ->
+    DgramState = ermdgram:dispatcher(State#state.dgram_state, Socket,
                                      IP, Port, Msg),
     State#state{dgram_state = DgramState};
+dispatcher(State, Socket, IP, Port, {proxy, Msg}) ->
+    ProxyState = ermproxy:dispatcher(State#state.server,
+                                     State#state.proxy_state, Socket,
+                                     IP, Port, Msg),
+    State#state{proxy_state = ProxyState};
 dispatcher(State, _, _IP, _Port, _Data) ->
     State.
 
@@ -789,7 +855,22 @@ run_test3() ->
         end,
     
     dgram_set_callback(test, F),
-    dgram_send(test1, get_id(test), "Hello World!").
+    dgram_send(test1, get_id(test), "Hello World!"),
+
+    start_link(test101, 10101),
+    set_nat_state(test101, symmetric),
+
+    Tag = dtun_find_node(test101, "localhost", 10000),
+
+    receive
+        {find_node, Tag, _Nodes} ->
+            io:format("start_symmetric: ok~n")
+    after 10000 ->
+            io:format("start_symmetric: timed out~n")
+    end,
+
+    proxy_register(test101),
+    dht_put(test101, 101, 101, 300).
 
 
 register_nodes(N)
@@ -813,7 +894,8 @@ register_nodes(_) ->
 stop_test3() ->
     N = 100,
     stop(test),
-    stop_nodes(N).
+    stop_nodes(N),
+    stop(test101).
 
 
 start_nodes2(Offset, N)
