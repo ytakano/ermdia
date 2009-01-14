@@ -23,10 +23,10 @@
 -export([dht_put/4, dht_index_get/5, dht_reput/1, dht_reput_finished/1]).
 -export([dht_ping/4]).
 
--export([dgram_send/3, dgram_send/4, dgram_ping/4, dgram_add_forward/4,
+-export([dgram_send/3, dgram_send/4, dgram_advertise/4, dgram_add_forward/4,
          dgram_set_callback/2]).
 
--export([proxy_register/1, proxy_set_server/3]).
+-export([proxy_register/1, proxy_set_server/3, proxy_set_registering/2]).
 
 -export([expire/1]).
 
@@ -170,8 +170,8 @@ dgram_send(Server, ID, Data) ->
 dgram_send(Server, ID, Src, Data) ->
     gen_server:call(Server, {dgram_send, ID, Src, Data}).
 
-dgram_ping(Server, ID, IP, Port) ->
-    gen_server:call(Server, {dgram_ping, ID, IP, Port}).
+dgram_advertise(Server, ID, IP, Port) ->
+    gen_server:call(Server, {dgram_advertise, ID, IP, Port}).
 
 dgram_set_callback(Server, Func) ->
     gen_server:call(Server, {dgram_set_callback, Func}).
@@ -185,6 +185,9 @@ proxy_register(Server) ->
 
 proxy_set_server(Server, IP, Port) ->
     gen_server:call(Server, {proxy_set_server, IP, Port}).
+
+proxy_set_registering(Server, Register) ->
+    gen_server:call(Server, {proxy_set_registering, Register}).
 
 
 expire(Server) ->
@@ -241,13 +244,17 @@ init([Server, Port | _]) ->
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
 handle_call(proxy_register, _From, State) ->
-    ermproxy:proxy_register(State#state.server,
-                            State#state.proxy_state,
-                            State#state.socket),
+    ProxyState = ermproxy:proxy_register(State#state.server,
+                                         State#state.proxy_state,
+                                         State#state.socket),
     Reply = ok,
-    {reply, Reply, State};
+    {reply, Reply, State#state{proxy_state = ProxyState}};
 handle_call({proxy_set_server, IP, Port}, _From, State) ->
     ProxyState = ermproxy:set_server(State#state.proxy_state, IP, Port),
+    Reply = ok,
+    {reply, Reply, State#state{proxy_state = ProxyState}};
+handle_call({proxy_set_registering, Register}, _From, State) ->
+    ProxyState = ermproxy:set_registering(State#state.proxy_state, Register),
     Reply = ok,
     {reply, Reply, State#state{proxy_state = ProxyState}};
 handle_call({dgram_add_forward, ID, IP, Port}, _From, State) ->
@@ -261,8 +268,8 @@ handle_call({dgram_set_callback, Func}, _From, State) ->
 handle_call({dgram_send, ID, Data}, _From, State) ->
     case State#state.nat_state of
         ?STATE_SYMMETRIC ->
-            ermproxy:send_dgram(State#state.socket, State#state.proxy_state,
-                                ID, Data);
+            ermproxy:send_dgram(State#state.server, State#state.socket,
+                                State#state.proxy_state, ID, Data);
         _ ->
             ermdgram:send_dgram(State#state.server, State#state.socket,
                                 State#state.dgram_state, ID, State#state.id,
@@ -276,9 +283,9 @@ handle_call({dgram_send, ID, Src, Data}, _From, State) ->
                         State#state.dgram_state, ID, Src, Data),
     Reply = ok,
     {reply, Reply, State};
-handle_call({dgram_ping, ID, IP, Port}, {PID, Tag}, State) ->
-    ermdgram:send_ping(State#state.socket, State#state.dgram_state,
-                       ID, IP, Port, PID, Tag),
+handle_call({dgram_advertise, ID, IP, Port}, {PID, Tag}, State) ->
+    ermdgram:send_advertise(State#state.socket, State#state.dgram_state,
+                            ID, IP, Port, PID, Tag),
     Reply = Tag,
     {reply, Reply, State};
 handle_call({index_get, Key, Index, IP, Port}, {PID, Tag}, State) ->
@@ -529,8 +536,8 @@ handle_info({udp, Socket, IP, Port, Bin}, State) ->
 
     case State#state.dump of
         true ->
-            io:format("recv udp: ID = ~p~n          Term = ~p~n",
-                      [State#state.id, Term]);
+            io:format("recv udp: IP = ~p, Port = ~p,~n          ID = ~p~n          Term = ~p~n",
+                      [IP, Port, State#state.id, Term]);
         _ ->
             ok
     end,
@@ -871,12 +878,12 @@ run_test3() ->
     dgram_set_callback(test, F),
     dgram_send(test1, get_id(test), "Hello World!"),
 
-    Tag0 = dgram_ping(test1, get_id(test), "localhost", 10000),
+    Tag0 = dgram_advertise(test1, get_id(test), "localhost", 10000),
     receive
-        {ping, Tag0, Ret} ->
-            io:format("dgram_ping: Ret = ~p~n", [Ret])
+        {advertise, Tag0, Ret} ->
+            io:format("dgram_advertise: Ret = ~p~n", [Ret])
     after 10000 ->
-            io:format("dgram_ping: timed out~n")
+            io:format("dgram_advertise: timed out~n")
     end,
 
     start_link(test101, 10101),
@@ -892,9 +899,10 @@ run_test3() ->
     end,
 
     proxy_register(test101),
+    dgram_send(test101, get_id(test), "hello proxy"),
 
-    ermlibs:sleep(3000),
     dht_put(test101, 101, 101, 300),
+
     Tag2 = dht_find_value(test101, 1),
     receive
         {find_value, Tag2, Value, From} ->

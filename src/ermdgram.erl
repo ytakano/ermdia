@@ -3,9 +3,10 @@
 -define(MAX_QUEUE, 1024 * 4).
 -define(DB_TTL, 240).
 -define(FORWARD_TTL, 300).
+-define(ADVERTISE_KEEP, 60).
 
 -export([init/2, send_dgram/6, set_recv_func/2, dispatcher/5, expire/1,
-         add_forward/4, send_ping/7]).
+         add_forward/4, send_advertise/7]).
 
 -record(dgram_state, {id, requested, queue, recv, forward, db_nonce}).
 
@@ -22,11 +23,11 @@ set_recv_func(State, Func) ->
     State#dgram_state{recv = Func}.
 
 
-%% p1 -> p2: ping, ID(p1), ID(p2), Nonce
-%% p1 <- p2: ping_reply, ID(p2), ID(p1), Nonce
-send_ping(Socket, State, ID, IP, Port, PID, Tag) ->
+%% p1 -> p2: advertise, ID(p1), ID(p2), Nonce
+%% p1 <- p2: advertise_reply, ID(p2), ID(p1), Nonce
+send_advertise(Socket, State, ID, IP, Port, PID, Tag) ->
     Nonce = ermlibs:gen_nonce(),
-    Msg = {ping, State#dgram_state.id, ID, Nonce},
+    Msg = {advertise, State#dgram_state.id, ID, Nonce},
 
     F = fun() ->
                 receive
@@ -34,7 +35,7 @@ send_ping(Socket, State, ID, IP, Port, PID, Tag) ->
                         ok
                 after 30000 ->
                         ets:delete(State#dgram_state.db_nonce, Nonce),
-                        catch PID ! {ping, Tag, false}
+                        catch PID ! {advertise, Tag, false}
                 end
         end,
     
@@ -143,21 +144,24 @@ dispatcher(State, Socket, IP, Port, {msg, FromID, DestID, Dgram} = Msg) ->
             end
     end,
     State;
-dispatcher(State, Socket, IP, Port, {ping, FromID, ID, Nonce})
+dispatcher(State, Socket, IP, Port, {advertise, FromID, ID, Nonce})
   when ID =:= State#dgram_state.id ->
-    Msg = {ping_reply, ID, FromID, Nonce},
+    io:format("recv advertise: Port = ~p~n", [Port]),
+
+    Msg = {advertise_reply, ID, FromID, Nonce},
     send_msg(Socket, IP, Port, Msg),
 
     ets:insert(State#dgram_state.requested,
                {FromID, IP, Port, ermlibs:get_sec()}),
 
     State;
-dispatcher(State, _Socket, IP, Port, {ping_reply, FromID, ID, Nonce})
+dispatcher(State, _Socket, IP, Port, {advertise_reply, FromID, ID, Nonce})
   when ID =:= State#dgram_state.id ->
+    io:format("recv advertise_reply: Port = ~p~n", [Port]),
     case ets:lookup(State#dgram_state.db_nonce, Nonce) of
         [{Nonce, PID, Tag, PID0} | _] ->
             PID0 ! terminate,
-            catch PID ! {ping, Tag, {ID, IP, Port}},
+            catch PID ! {advertise, Tag, {ID, IP, Port}},
             ets:delete(State#dgram_state.db_nonce, Nonce),
 
             ets:insert(State#dgram_state.requested,
