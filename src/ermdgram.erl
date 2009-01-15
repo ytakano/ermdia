@@ -3,7 +3,6 @@
 -define(MAX_QUEUE, 1024 * 4).
 -define(DB_TTL, 240).
 -define(FORWARD_TTL, 300).
--define(ADVERTISE_KEEP, 60).
 
 -export([init/2, send_dgram/6, set_recv_func/2, dispatcher/5, expire/1,
          add_forward/4, send_advertise/7]).

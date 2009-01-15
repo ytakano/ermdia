@@ -288,9 +288,15 @@ handle_call({dgram_advertise, ID, IP, Port}, {PID, Tag}, State) ->
                             ID, IP, Port, PID, Tag),
     Reply = Tag,
     {reply, Reply, State};
-handle_call({index_get, Key, Index, IP, Port}, {PID, Tag}, State) ->
-    ermdht:index_get(State#state.socket, State#state.dht_state,
-                     Key, Index, IP, Port, PID, Tag),
+handle_call({dht_index_get, Key, Index, IP, Port}, {PID, Tag}, State) ->
+    case State#state.nat_state of
+        ?STATE_SYMMETRIC ->
+            ermproxy:index_get(State#state.socket, State#state.proxy_state,
+                               Key, Index, IP, Port, PID, Tag);
+        _ ->
+            ermdht:index_get(State#state.socket, State#state.dht_state,
+                             Key, Index, IP, Port, PID, Tag)
+    end,
     Reply = Tag,
     {reply, Reply, State};
 handle_call({dht_put, Key, Value, TTL}, {PID, Tag}, State) ->
@@ -515,6 +521,7 @@ handle_cast(expire, State) ->
     ermdht:expire(State#state.dht_state),
     ermpeers:expire(State#state.peers),
     ermdgram:expire(State#state.dgram_state),
+    ermproxy:expire(State#state.proxy_state),
 
     {noreply, State};
 handle_cast(stop, State) ->
@@ -903,6 +910,7 @@ run_test3() ->
 
     dht_put(test101, 101, 101, 300),
 
+    set_dump(test101, true),
     Tag2 = dht_find_value(test101, 1),
     receive
         {find_value, Tag2, Value, From} ->
@@ -910,7 +918,9 @@ run_test3() ->
                       [Value, From])
     after 10000 ->
             io:format("symmetric find_value: timed out~n")
-    end.
+    end,
+
+    index_get_test().
 
 
 register_nodes(N)
@@ -1000,10 +1010,18 @@ put_dht(N)
     S0 = "test" ++ integer_to_list(N),
     S = list_to_atom(S0),
 
-    Tag = dht_put(S, N, N, 300),
+    Tag0 = dht_put(S, N, val1, 300),
     receive
-        {put, Tag, Ret} ->
-            io:format("dht_put: N = ~p, Ret = ~p~n", [N, Ret])
+        {put, Tag0, Ret0} ->
+            io:format("dht_put: N = ~p, Ret = ~p~n", [N, Ret0])
+    after 10000 ->
+            io:format("dht_put: timed out, N = ~p~n", [N])
+    end,
+
+    Tag1 = dht_put(S, N, val2, 300),
+    receive
+        {put, Tag1, Ret1} ->
+            io:format("dht_put: N = ~p, Ret = ~p~n", [N, Ret1])
     after 10000 ->
             io:format("dht_put: timed out, N = ~p~n", [N])
     end,
@@ -1031,3 +1049,21 @@ find_value_dht(N)
 find_value_dht(_) ->
     ok.
 
+
+index_get_test() ->
+    set_dump(test100, true),
+    Tag = dht_find_value(test100, 1),
+    receive
+        {find_value, Tag, false, false} ->
+            io:format("index_get: false~n");
+        {find_value, Tag, _, {IP, Port}} ->
+            Tag1 = dht_index_get(test100, 1, 2, IP, Port),
+            receive
+                {get, Tag1, Ret, _} ->
+                    io:format("index_get: Ret = ~p~n", [Ret])
+            after 10000 ->
+                    io:format("index_get: timed out 1~n")
+            end
+    after 10000 ->
+            io:format("index_get: timed out 2~n")
+    end.

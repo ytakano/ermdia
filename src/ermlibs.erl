@@ -24,8 +24,7 @@ add2last(Data, List) ->
 
 
 gen_nonce() ->
-    <<Nonce:32>> = crypto:rand_bytes(4),
-    Nonce.
+    make_ref().
 
 
 get_sec() ->

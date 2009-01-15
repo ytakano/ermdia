@@ -52,9 +52,11 @@ stop(State) ->
 
 %% 1. p1 -> p2: index_get, ID(p1), Dest, Key, Index, Nonce
 %% 2. p1 <- p2: index_get_reply, ID(p2), Dest,
-%%              false | {Index, #Total, Value, Elapsed_Time}, Nonce
+%%              false | {Index, #Total, Value, TTL}, Nonce
 index_get(_, State, Key, Index, localhost, 0, PID, Tag) ->
-    Data = case ets:lookup(State#dht_state.db) of
+    <<ID:160>> = crypto:sha(term_to_binary(Key)),
+
+    Data = case ets:lookup(State#dht_state.db, ID) of
                [] ->
                    false;
                Values ->
@@ -189,22 +191,11 @@ find_node(UDPServer, Socket, State, ID, Nonce, Nodes, N, IsValue, PID, Tag) ->
     Table    = State#dht_state.table,
     DicNonce = State#dht_state.dict_nonce,
     Peers    = State#dht_state.peers,
-    DB       = State#dht_state.db,
-    DBSec    = State#dht_state.db_sec,
 
     receive
         {find_node, true, Value, _FromID, IP, Port} ->
             case {IsValue, Value} of
-                {{true, Key}, {_, _, Val, TTL}} ->
-                    if
-                        TTL > 0 ->
-                            ets:insert(DB, {{ID, Key}, Val}),
-                            ets:insert(DBSec, {{ID, Key, Val},
-                                               ermlibs:get_sec(), TTL});
-                        true ->
-                            ok
-                    end,
-
+                {{true, _Key}, {_, _, _Val, _TTL}} ->
                     ets:delete(DicNonce, {find_node, ID, Nonce}),
 
                     catch PID ! {find_value, Tag, Value, {IP, Port}};
@@ -356,18 +347,22 @@ send_find_node(Socket, UDPServer, Peers, MyID, ID, Nonce, [Node | T],
 
 dispatcher(_UDPServer, State, Socket, IP, Port,
            {index_get, _FromID, ID, Key, Index, Nonce}) ->
-    Data = case ets:lookup(State#dht_state.db) of
+    %% io:format("recv index_get: Port = ~p~n", [Port]),
+
+    Data = case ets:lookup(State#dht_state.db, {ID, Key}) of
                [] ->
                    false;
                Values ->
                    Len = length(Values),
-                   I = if
-                           Index > Len ->
-                               Len;
-                           true ->
-                               Index
-                       end,
-                   {{ID, Key}, Value} = lists:nth(I),
+                   {Index0, I} = if
+                                     Index > Len ->
+                                         {Len, Len};
+                                     true ->
+                                         {Index, Len}
+                                 end,
+
+                   {{ID, Key}, Value} = lists:nth(I, Values),
+
                    Sec = case ets:lookup(State#dht_state.db_sec,
                                          {ID, Key, Value}) of
                              [{_, S} | _] ->
@@ -375,7 +370,8 @@ dispatcher(_UDPServer, State, Socket, IP, Port,
                              _ ->
                                  0
                          end,
-                   {Index, Len, Value, Sec}
+
+                   {Index0, Len, Value, Sec}
            end,
 
     Msg = {index_get_reply, State#dht_state.id, ID, Key, Data, Nonce},
@@ -383,8 +379,10 @@ dispatcher(_UDPServer, State, Socket, IP, Port,
     State;
 dispatcher(_UDPServer, State, _Socket, IP, Port,
            {index_get_reply, _FromID, ID, Key, Data, Nonce}) ->
+    %% io:format("recv index_get_reply: Port = ~p~n", [Port]),
+
     case ets:lookup(State#dht_state.dict_nonce, {index_get, ID, Key, Nonce}) of
-        [{{ID, Key, Nonce}, PID, Tag} | _] ->
+        [{{index_get, ID, Key, Nonce}, PID, Tag} | _] ->
             ets:delete(State#dht_state.dict_nonce, {index_get, ID, Key, Nonce}),
             catch PID ! {get, Tag, Data, {IP, Port}};
         _ ->

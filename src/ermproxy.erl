@@ -9,12 +9,53 @@
 -export([find_value/5]).
 -export([set_registering/2]).
 -export([expire/1]).
+-export([index_get/8]).
 
 -define(MAX_QUEUE, 1024 * 4).
 -define(DIRECT_TTL, 300).
 
 -record(proxy_state, {id, proxy_server = {}, db_nonce, direct, queue,
                       registering = false}).
+
+
+%% p1 -> p2      : index_get, ID(p1), Key, Index, Nonce1, IP(p3), Port(p3)
+%%       p2 -> p3: index_get, ID(p2), Dest, Key, Index, Nonce2
+%%       p2 <- p3: index_get_reply, ID(p2), Dest,
+%%                 false | {Index, #Total, Value, TTL}, Nonce2
+%% p1 <- p2      : index_get_reply, ID(p2), Key,
+%%                 false | {Index, #Total, Value, TTL}, Nonce1,
+%%                 {IP(p3), Port(p3)}
+index_get(Socket, State, Key, Index, IP, Port, PID, Tag) ->
+    case State#proxy_state.proxy_server of
+        {IP0, Port0} ->
+            Nonce = ermlibs:gen_nonce(),
+
+            F = fun() ->
+                        receive
+                            terminate ->
+                                ok
+                        after 30000 ->
+                                ets:delete(State#proxy_state.db_nonce, Nonce)
+                        end
+                end,
+
+            PID0 = spawn_link(F),
+
+            ets:insert(State#proxy_state.db_nonce,
+                       {Nonce, PID, Tag, PID0}),
+
+            Msg = case {IP0, Port0} of
+                      {IP, Port} ->
+                          {index_get, State#proxy_state.id, Key, Index, Nonce,
+                           localhost, 0};
+                      _ ->
+                          {index_get, State#proxy_state.id, Key, Index, Nonce,
+                           IP, Port}
+                  end,
+            send_msg(Socket, IP0, Port0, Msg);
+        _ ->
+            PID ! {get, Tag, false, false}
+    end.
 
 
 set_server(State, IP, Port) ->
@@ -279,12 +320,17 @@ dispatcher(UDPServer, State, _Socket, _IP, _Port,
     spawn_link(F),
     State;
 dispatcher(_UDPServer, State, _Socket, IP, Port,
-           {find_value_reply, _FromID, Val, Nonce}) ->
+           {find_value_reply, _FromID, Val, Nonce, From}) ->
     %% io:format("recv find_value_reply: Port = ~p~n", [Port]),
     case ets:lookup(State#proxy_state.db_nonce, Nonce) of
         [{Nonce, PID, Tag, PID0} | _] ->
             PID0 ! terminate,
-            PID ! {find_value, Tag, Val, {IP, Port}};
+            case From of
+                {localhost, 0} ->
+                    PID ! {find_value, Tag, Val, {IP, Port}};
+                _ ->
+                    PID ! {find_value, Tag, Val, From}
+            end;
         _ ->
             ok
     end,
@@ -295,13 +341,9 @@ dispatcher(UDPServer, State, Socket, IP, Port,
     F = fun() ->
                 Tag = ermudp:dht_find_value(UDPServer, Key),
                 receive
-                    {find_value, Tag, false, _} ->
+                    {find_value, Tag, Val, From} ->
                         Msg = {find_value_reply, State#proxy_state.id,
-                               false, Nonce},
-                        send_msg(Socket, IP, Port, Msg);
-                    {find_value, Tag, Val, _} ->
-                        Msg = {find_value_reply, State#proxy_state.id,
-                               Val, Nonce},
+                               Val, Nonce, From},
                         send_msg(Socket, IP, Port, Msg)
                 after 30000 ->
                         ok
@@ -310,6 +352,38 @@ dispatcher(UDPServer, State, Socket, IP, Port,
 
     spawn_link(F),
 
+    State;
+dispatcher(UDPServer, State, Socket, IP, Port,
+           {index_get, _FromID, Key, Index, Nonce, ToIP, ToPort}) ->
+    F = fun() ->
+                Tag = ermudp:dht_index_get(UDPServer, Key, Index, ToIP, ToPort),
+                receive
+                    {get, Tag, Value, From} ->
+                        Msg = {index_get_reply, State#proxy_state.id,
+                               Key, Value, Nonce, From},
+                        send_msg(Socket, IP, Port, Msg)
+                after 30000 ->
+                        ok
+                end
+        end,
+
+    spawn_link(F),
+    State;
+dispatcher(_UDPServer, State, _Socket, IP, Port,
+           {index_get_reply, _FromID, _Key, Value, Nonce, From}) ->
+    case ets:lookup(State#proxy_state.db_nonce, Nonce) of
+        [{Nonce, PID, Tag, PID0} | _] ->
+            PID0 ! terminate,
+            case From of
+                {localhost, 0} ->
+                    PID ! {get, Tag, Value, {IP, Port}};
+                _ ->
+                    PID ! {get, Tag, Value, From}
+            end,
+            ets:delete(State#proxy_state.db_nonce, Nonce);
+        _ ->
+            ok
+    end,
     State;
 dispatcher(_, State, _, _, _, _) ->
     State.
