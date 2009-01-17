@@ -10,12 +10,24 @@
 -export([set_registering/2]).
 -export([expire/1]).
 -export([index_get/8]).
+-export([forward_msg/7]).
 
 -define(MAX_QUEUE, 1024 * 4).
 -define(DIRECT_TTL, 300).
 
 -record(proxy_state, {id, proxy_server = {}, db_nonce, direct, queue,
                       registering = false}).
+
+
+%% p1 -> p2      : dgram, msg, ID(p2), ID(p3), Data
+%%       p2 -> p3: proxy, forwarded, ID(p2), {msg, ID(p2), ID(p3), Data},
+%%                 IP(p1), Port(p1)
+%% p1 <------- p3: dgram, advertise, ID(p3), ID(p1), Nonce
+%% p1 -------> p3: dgram, advertise_reply, ID(p1), ID(p2), Nonce
+forward_msg(Socket, ID, Data, FromIP, FromPort, DstIP, DstPort) ->
+    Msg = {forwarded, ID, Data, FromIP, FromPort},
+    send_msg(Socket, DstIP, DstPort, Msg).
+
 
 
 %% p1 -> p2      : index_get, ID(p1), Key, Index, Nonce1, IP(p3), Port(p3)
@@ -138,37 +150,11 @@ send_dgram(UDPServer, Socket, State, ID, Data) ->
                         ermudp:dgram_send(UDPServer, ID, Data)
                 end,
             spawn_link(F);
-        [{ID, false, _} | _] ->
-            add2queue(State, ID, Data),
-
-            case State#proxy_state.proxy_server of
-                {IP, Port} ->
-                    send_queue(Socket, State, ID, IP, Port);
-                _ ->
-                    spawn_link(F)
-            end;
         _ ->
             add2queue(State, ID, Data),
 
             case State#proxy_state.proxy_server of
                 {IP, Port} ->
-                    F = fun() ->
-                                Tag = ermudp:dgram_advertise(UDPServer,
-                                                             ID, IP, Port),
-                                receive
-                                    {advertise, Tag, false} ->
-                                        ets:insert(State#proxy_state.direct,
-                                                   {ID, false,
-                                                    ermlibs:get_sec()});
-                                    {advertise, Tag, _} ->
-                                        ets:insert(State#proxy_state.direct,
-                                                   {ID, true,
-                                                    ermlibs:get_sec()})
-                                end
-                        end,
-                    
-                    spawn_link(F),
-
                     Msg = {dgram, State#proxy_state.id, ID, Data},
                     send_msg(Socket, IP, Port, Msg);
                 _ ->
@@ -271,7 +257,8 @@ proxy_register(UDPServer, State, Socket) ->
 dispatcher(UDPServer, State, Socket, IP, Port, {register, ID, Nonce}) ->
     %% io:format("recv register: Port = ~p~n", [Port]),
     F = fun() ->
-                ermudp:dtun_register(UDPServer, ID)
+                ermudp:dtun_register(UDPServer, ID),
+                ermudp:dgram_add_forward(UDPServer, ID, IP, Port)
         end,
     
     spawn_link(F),
@@ -384,6 +371,40 @@ dispatcher(_UDPServer, State, _Socket, IP, Port,
         _ ->
             ok
     end,
+    State;
+dispatcher(UDPServer, State, _Socket, _IP, _Port,
+           {forwarded, _ProxyID, {msg, FromID, _DestID, Data},
+            FromIP, FromPort}) ->
+    F = fun() ->
+                Tag = ermudp:dgram_advertise(UDPServer,
+                                             FromID, FromIP, FromPort),
+                receive
+                    {advertise, Tag, false} ->
+                        ets:insert(State#proxy_state.direct,
+                                   {FromID, false, ermlibs:get_sec()});
+                    {advertise, Tag, _} ->
+                        ets:insert(State#proxy_state.direct,
+                                   {FromID, true, ermlibs:get_sec()})
+                end
+        end,
+
+    case ets:lookup(State#proxy_state.direct, FromID) of
+        [{FromID, true, _} | _]  ->
+            ok;
+        [{FromID, false, Sec} | _]  ->
+            Diff = ermlibs:get_sec() - Sec,
+            if
+                Diff > ?DIRECT_TTL ->
+                    spawn_link(F);
+                true ->
+                    ok
+            end;
+        _ ->
+            spawn_link(F)
+    end,
+    
+    spawn_link(fun() -> ermudp:dgram_recv(UDPServer, FromID, Data) end),
+
     State;
 dispatcher(_, State, _, _, _, _) ->
     State.

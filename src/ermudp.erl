@@ -24,7 +24,7 @@
 -export([dht_ping/4]).
 
 -export([dgram_send/3, dgram_send/4, dgram_advertise/4, dgram_add_forward/4,
-         dgram_set_callback/2]).
+         dgram_set_callback/2, dgram_recv/3]).
 
 -export([proxy_register/1, proxy_set_server/3, proxy_set_registering/2]).
 
@@ -170,6 +170,9 @@ dgram_send(Server, ID, Data) ->
 dgram_send(Server, ID, Src, Data) ->
     gen_server:call(Server, {dgram_send, ID, Src, Data}).
 
+dgram_recv(Server, ID, Data) ->
+    gen_server:call(Server, {dgram_recv, ID, Data}).
+
 dgram_advertise(Server, ID, IP, Port) ->
     gen_server:call(Server, {dgram_advertise, ID, IP, Port}).
 
@@ -265,6 +268,10 @@ handle_call({dgram_set_callback, Func}, _From, State) ->
     DgramState = ermdgram:set_recv_func(State#state.dgram_state, Func),
     Reply = ok,
     {reply, Reply, State#state{dgram_state = DgramState}};
+handle_call({dgram_recv, ID, Data}, _From, State) ->
+    ermdgram:recv_dgram(State#state.dgram_state, ID, Data),
+    Reply = ok,
+    {reply, Reply, State};
 handle_call({dgram_send, ID, Data}, _From, State) ->
     case State#state.nat_state of
         ?STATE_SYMMETRIC ->

@@ -5,12 +5,13 @@
 -define(FORWARD_TTL, 300).
 
 -export([init/2, send_dgram/6, set_recv_func/2, dispatcher/5, expire/1,
-         add_forward/4, send_advertise/7]).
+         add_forward/4, send_advertise/7, recv_dgram/3]).
 
 -record(dgram_state, {id, requested, queue, recv, forward, db_nonce}).
 
 
 add_forward(State, ID, IP, Port) ->
+    %% io:format("add_forward: Port = ~p~n", [Port]),
     ets:insert(State#dgram_state.forward, {ID, IP, Port, ermlibs:get_sec()}).
 
 
@@ -125,6 +126,11 @@ recv_func(_ID, _Dgram) ->
     ok.
 
 
+recv_dgram(State, FromID, Data) ->
+    Recv = State#dgram_state.recv,
+    Recv(FromID, Data).
+
+
 dispatcher(State, Socket, IP, Port, {msg, FromID, DestID, Dgram} = Msg) ->
     ets:insert(State#dgram_state.requested,
                {FromID, IP, Port, ermlibs:get_sec()}),
@@ -137,7 +143,8 @@ dispatcher(State, Socket, IP, Port, {msg, FromID, DestID, Dgram} = Msg) ->
         _ ->
             case ets:lookup(State#dgram_state.forward, DestID) of
                 [{DestID, DestIP, DestPort, _} | _] ->
-                    send_msg(Socket, DestIP, DestPort, Msg);
+                    ermproxy:forward_msg(Socket, State#dgram_state.id,
+                                         Msg, IP, Port, DestIP, DestPort);
                 _ ->
                     ok
             end
@@ -145,7 +152,7 @@ dispatcher(State, Socket, IP, Port, {msg, FromID, DestID, Dgram} = Msg) ->
     State;
 dispatcher(State, Socket, IP, Port, {advertise, FromID, ID, Nonce})
   when ID =:= State#dgram_state.id ->
-    io:format("recv advertise: Port = ~p~n", [Port]),
+    %% io:format("recv advertise: Port = ~p~n", [Port]),
 
     Msg = {advertise_reply, ID, FromID, Nonce},
     send_msg(Socket, IP, Port, Msg),
@@ -156,7 +163,7 @@ dispatcher(State, Socket, IP, Port, {advertise, FromID, ID, Nonce})
     State;
 dispatcher(State, _Socket, IP, Port, {advertise_reply, FromID, ID, Nonce})
   when ID =:= State#dgram_state.id ->
-    io:format("recv advertise_reply: Port = ~p~n", [Port]),
+    %% io:format("recv advertise_reply: Port = ~p~n", [Port]),
     case ets:lookup(State#dgram_state.db_nonce, Nonce) of
         [{Nonce, PID, Tag, PID0} | _] ->
             PID0 ! terminate,
